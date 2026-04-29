@@ -1,0 +1,32 @@
+{
+    "creators": [
+        {
+            "orcid": "0000-0001-6541-2768",
+            "affiliation": "ACCESS-NRI",
+            "name": "Bird, Lawrence"
+        },
+        {
+            "orcid": "0000-0002-5238-6115",
+            "affiliation": "ACCESS-NRI",
+            "name": "Kin Jun Hew, Justin"
+        },
+        {
+            "orcid": "0000-0002-2320-4239",
+            "affiliation": "ACCESS-NRI",
+            "name": "Tetley, Michael G."
+        }
+    ],
+
+    "license": "Apache-2.0",
+
+    "title": "ACCESS-AIS3",
+    "description": "Whole-Antarctic ACCESS configuration for the Ice-sheet and Sea-level System Model (ISSM)",
+
+    "keywords": ["Cryosphere", "Ice sheet modelling", "Climate", "Science", "ACCESS-NRI", "NCI"],
+
+    "communities": [
+        {"identifier": "access-nri"}
+    ],
+
+    "grants": [{"id":""}]
+}
