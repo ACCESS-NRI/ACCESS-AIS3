@@ -2,7 +2,7 @@
 
 ---
 ## About
-Open community whole-Antarctic ACCESS configuration for the Ice-sheet and Sea-level System Model (ISSM) for the ACCESS climate model suite.
+Open community whole-Antarctic configuration for the Ice-sheet and Sea-level System Model (ISSM) for the ACCESS climate model suite.
 
 ## Project status
 🚨 **ACCESS-AI3 is in the initial development stage.** 🚨
