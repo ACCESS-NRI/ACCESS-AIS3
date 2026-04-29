@@ -1,4 +1,4 @@
-# ACCESS-AIS3 - Whole-Antarctic Ice Sheet Model Configuration
+# ACCESS-AIS3
 
 ---
 ## About
