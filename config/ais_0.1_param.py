@@ -92,16 +92,49 @@ md.mask.ice_levelset[pos] = 1
 print(f"\nDEFINING MODEL INITIAL & OBS VELOCITY")
 
 # Interpolate velocity data
-md.inversion.vx_obs = pyissm.data.interp.xr_to_mesh(velocity_data, 'VX', md.mesh.x, md.mesh.y)
-md.inversion.vy_obs = pyissm.data.interp.xr_to_mesh(velocity_data, 'VY', md.mesh.x, md.mesh.y)
+vx = pyissm.data.interp.xr_to_mesh(velocity_data, 'VX', md.mesh.x, md.mesh.y)
+vy = pyissm.data.interp.xr_to_mesh(velocity_data, 'VY', md.mesh.x, md.mesh.y)
 
-# Set nan values to be 0
-pos = (np.isnan(md.inversion.vx_obs)) | (np.isnan(md.inversion.vy_obs))
-md.inversion.vx_obs[pos] = 0
-md.inversion.vy_obs[pos] = 0
+# Fill NaN values in vx/vy
+for arr in [vx, vy]:
 
-# Calculate observed velocity
-md.inversion.vel_obs = np.sqrt(md.inversion.vx_obs**2 + md.inversion.vy_obs**2)
+    ## Identify nan points
+    nan_mask = np.isnan(arr)
+
+    ## Fill nan values using NN interpolation
+    if np.any(nan_mask):
+        filled = pyissm.data.interp.points_to_mesh(
+            data_x=md.mesh.x[~nan_mask],
+            data_y=md.mesh.y[~nan_mask],
+            data_values=arr[~nan_mask],
+            mesh_x=md.mesh.x,
+            mesh_y=md.mesh.y,
+            interpolation_type='nearest'
+        )
+
+        ## Replace nan values
+        arr[nan_mask] = filled[nan_mask]
+
+    # Replace any remaining NaNs with zero
+    arr = np.nan_to_num(arr, nan = 0.0)
+
+# Calculate vel
+vel = np.sqrt(vx**2 + vy**2)
+
+# Identify nodes belonging to elements containing ANY ice (e.g. including ice-front)
+## Average ice-mask to elements to identify elements with ANY ice (e.g. all ice or ice-front)
+tmp = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
+mds = md.extract(tmp < 1)
+keep = mds.mesh.extractedvertices - 1 # NOTE -1 for 0-based indexing
+
+# Create observation arrays
+## This sets PURELY ocean elements to 0 and assigns observed velocities to all others
+md.inversion.vx_obs = np.zeros(md.mesh.numberofvertices)
+md.inversion.vy_obs = np.zeros(md.mesh.numberofvertices)
+md.inversion.vel_obs = np.zeros(md.mesh.numberofvertices)
+md.inversion.vx_obs[keep] = vx[keep]
+md.inversion.vy_obs[keep] = vy[keep]
+md.inversion.vel_obs[keep] = vel[keep]
 
 # Assign observed velocities to initial velocities
 md.initialization.vx = md.inversion.vx_obs.copy()
@@ -150,7 +183,7 @@ print(f"\nDEFINING GEOTHERMAL HEAT FLOW")
 geothermal_data['Q'] = geothermal_data['Q'].fillna(0.0)
 
 # Interpolate AQ1 data
-md.basalforcings.geothermalflux= pyissm.data.interp.xr_to_mesh(geothermal_data, 'Q', md.mesh.x, md.mesh.y, x_var = 'X', y_var = 'Y')
+md.basalforcings.geothermalflux = pyissm.data.interp.xr_to_mesh(geothermal_data, 'Q', md.mesh.x, md.mesh.y, x_var = 'X', y_var = 'Y')
 
 # Set NaN values to 0
 md.basalforcings.geothermalflux = np.nan_to_num(md.basalforcings.geothermalflux, nan = 0.0)
@@ -166,7 +199,7 @@ ts = racmo_data['ts']
 
 # Extract 1995 values and calculate annual mean
 ts_1995 = ts.sel(time = ts['time.year'] == 1995)
-ts_1995_mean = ts.mean('time').squeeze()
+ts_1995_mean = ts_1995.mean('time').squeeze()
 
 # Interpolate onto mesh
 ts_mesh = pyissm.data.interp.points_to_mesh(x, y, ts_1995_mean.to_numpy(), md.mesh.x, md.mesh.y)
