@@ -3,12 +3,6 @@ import ccdtools
 import numpy as np
 import xarray as xr
 
-"""
-TODO:
-- Add Shivani's effective_pressure field to CCD (https://github.com/ACCESS-NRI/ccdtools/issues/62)
-- Add MIPKIT to CCD (https://github.com/ACCESS-NRI/ccdtools/issues/61) and replace individual datasets with this, where possible
-"""
-
 print("---------------------------------------------------------"  )
 print(f" RUNNING ais_01_param.py PARAMETERIZATION SCRIPT"          )
 print("---------------------------------------------------------\n")
@@ -95,28 +89,10 @@ print(f"\nDEFINING MODEL INITIAL & OBS VELOCITY")
 vx = pyissm.data.interp.xr_to_mesh(velocity_data, 'VX', md.mesh.x, md.mesh.y)
 vy = pyissm.data.interp.xr_to_mesh(velocity_data, 'VY', md.mesh.x, md.mesh.y)
 
-# Fill NaN values in vx/vy
-for arr in [vx, vy]:
-
-    ## Identify nan points
-    nan_mask = np.isnan(arr)
-
-    ## Fill nan values using NN interpolation
-    if np.any(nan_mask):
-        filled = pyissm.data.interp.points_to_mesh(
-            data_x=md.mesh.x[~nan_mask],
-            data_y=md.mesh.y[~nan_mask],
-            data_values=arr[~nan_mask],
-            mesh_x=md.mesh.x,
-            mesh_y=md.mesh.y,
-            interpolation_type='nearest'
-        )
-
-        ## Replace nan values
-        arr[nan_mask] = filled[nan_mask]
-
-    # Replace any remaining NaNs with zero
-    arr = np.nan_to_num(arr, nan = 0.0)
+# Set nan values to be 0
+nan_vel = (np.isnan(vx)) | (np.isnan(vy))
+vx[nan_vel] = 0
+vy[nan_vel] = 0
 
 # Calculate vel
 vel = np.sqrt(vx**2 + vy**2)
@@ -161,7 +137,7 @@ print(f"\nDEFINING INITIAL FRICTION")
 
 # Use Schoof friction law
 md.friction = pyissm.model.classes.friction.schoof()
-md.friction.C = np.full(md.mesh.numberofvertices, 500)
+md.friction.C = np.full(md.mesh.numberofvertices, 500.0)
 md.friction.Cmax = np.full(md.mesh.numberofvertices, 0.5)
 md.friction.m = np.full(md.mesh.numberofelements, 1/3)
 
@@ -171,6 +147,13 @@ md.friction.effective_pressure = pyissm.data.interp.xr_to_mesh(ehrenfeucht_2024,
 
 # Set NaN values to 0
 md.friction.effective_pressure = np.nan_to_num(md.friction.effective_pressure, nan = 0.0)
+
+# Set negative values to 0
+negative_neff = md.friction.effective_pressure < 0
+md.friction.effective_pressure[negative_neff] = 0.0
+
+# Set limit
+md.friction.effective_pressure_limit = 0.01
 
 ## -----------------------------------------
 ## --------- THERMAL BALANCE FIELDS --------
