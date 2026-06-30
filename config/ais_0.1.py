@@ -19,7 +19,7 @@ os.environ['ISSM_DIR'] = '/g/data/vk83/apps/spack/1.1/release/linux-x86_64/issm-
 # Should plots be generated?
 plot = True
 diagnostics = True
-save = True
+save = False
 inversion_sensitivity = False
 
 # Define execution directory
@@ -55,17 +55,37 @@ all_steps = [
     'ssa_rheology_floating_inv_sensit',
     'ssa_rheology_floating_inv_lcurve',
     # 'ssa_rheology_floating_inv',
-    'ssa_friction_inv_sensit'
+    'ssa_friction_inv_sensit',
+    'ssa_friction_inv_lcurve',
+    'ssa_inverted_solve',
+    'ssa_relaxation'
 ]
 
 # Define steps to run
 # steps = ['process_domain', 'mesh', 'param']
 # steps = ['mesh', 'param']
 # steps = ['ssa_rheology_floating_inv_sensit']
-# steps = ['ssa_rheology_floating_inv_sensit']
-steps = ['ssa_rheology_floating_inv_lcurve']
-# steps = ['ssa_rheology_floating_inv']
+# steps = ['ssa_rheology_floating_inv_lcurve']
 # steps = ['ssa_friction_inv_sensit']
+# steps = ['ssa_friction_inv_lcurve']
+# steps = ['ssa_inverted_solve']
+# steps = ['ssa_relaxation']
+steps = ['ssa_friction_inv_sensit']
+
+## ------------------------------------
+## Chosen inversion runs (update after inspecting sensit / lcurve diagnostics)
+## ------------------------------------
+# Floating-ice rheology B field taken from the rheology L-curve (cf502 regularisation).
+rheology_lcurve_run = 'run_004_1_10_1e-17'
+
+# Preferred 101/103 cost-function coefficients for the friction inversion (best run
+# from ssa_friction_inv_sensit -- UPDATE once that sweep has been inspected).
+friction_cf101 = 1
+friction_cf103 = 1
+
+# Grounded-ice friction C field taken from the friction L-curve (cf502 regularisation).
+# Built below once the friction L-curve has run -- UPDATE the cf502 value to the chosen corner.
+friction_lcurve_run = f'run_004_{friction_cf101}_{friction_cf103}_1e-17'
 
 
 ## ------------------------------------
@@ -470,7 +490,7 @@ if 'ssa_friction_inv_sensit' in steps:
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
 
     print(f"-- Loading SSA floating rheology inversion results...")
-    mds = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/run_0003_1_10_1e-17/run_0003_1_10_1e-17.nc')
+    mds = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/run_004_1_10_1e-17/run_004_1_10_1e-17.nc')
 
     print(f"-- Updating rheology field from inversion results...")
     md.materials.rheology_B[mds.mesh.extractedvertices - 1] = mds.results.StressbalanceSolution.MaterialsRheologyBbar # Note: -1 for zero-based indexing
@@ -580,3 +600,240 @@ if 'ssa_friction_inv_sensit' in steps:
             run = True,
             load_only = False,
             global_mask = mask)
+
+
+## ------------------------------------
+## SSA Friction Inversion L-Curve - Grounded Ice
+## ------------------------------------
+if 'ssa_friction_inv_lcurve' in steps:
+
+    print("-------------------------------------------------------------")
+    print(f" SSA FRICTION INVERSION L-CURVE - GROUNDED ICE"              )
+    print("-------------------------------------------------------------")
+
+    print(f"-- Loading parameterized model...")
+    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
+
+    print(f"-- Loading SSA floating rheology inversion results...")
+    mds = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
+
+    print(f"-- Updating rheology field from inversion results...")
+    md.materials.rheology_B[mds.mesh.extractedvertices - 1] = mds.results.StressbalanceSolution.MaterialsRheologyBbar # Note: -1 for zero-based indexing
+
+    print('-- Removing icebergs from ice levelset...')
+    md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
+
+    print(f"-- Define general control parameters...")
+    md.inversion.iscontrol = 1
+    md.verbose.solution = 0
+    md.verbose.qmu = 0
+    md.verbose.control = 1
+
+    # Fix negative effective pressure
+    # TODO: Update this in param
+    N = md.friction.effective_pressure.copy()
+    N[N < 0] = 0
+    md.friction.effective_pressure = N
+    md.friction.effective_pressure_limit = 0.01
+
+    print(f"-- Extracting ice only (including ice-front)...")
+    ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
+    mds = md.extract(ice_levelset_elements < 1)
+
+    # Set only Neumann BCs on the floating ice-front (Neumann with Dirichlet constraint elsewhere)
+    iceFront = (mds.mask.ice_levelset >= 0) & (mds.mask.ocean_levelset < 0)
+    mds.stressbalance.spcvx[iceFront] = np.nan
+    mds.stressbalance.spcvy[iceFront] = np.nan
+    mds.stressbalance.spcvz[iceFront] = np.nan
+
+    print(f"-- Defining inversion parameters...")
+    mds.inversion = pyissm.model.classes.inversion.m1qn3(mds.inversion)
+    mds.inversion.control_parameters = ['FrictionC']
+    mds.inversion.min_parameters = np.full(mds.mesh.numberofvertices, 0.05)
+    mds.inversion.max_parameters = np.full(mds.mesh.numberofvertices, 250**2) ## TODO: Set upper bound once better constrained
+    mds.inversion.maxsteps = 500
+    mds.inversion.maxiter = 200
+
+    print(f"-- Assigning cluster and updating settings...")
+    mds.cluster = cluster
+    mds.settings.waitonlock = 0
+
+    # No friction on PURELY floating ice elements
+    ocean_elements = mds.mask.ocean_levelset[mds.mesh.elements - 1] # -1 for zero-based indexing
+    pos_e = np.where(np.min(ocean_elements, axis=1) < 0)[0]
+    flags = np.zeros(mds.mesh.numberofvertices, dtype=bool)
+    flags[mds.mesh.elements[pos_e, :] - 1] = True # -1 for zero-based indexing
+    mds.friction.C = mds.friction.C.astype(float)
+    mds.friction.C[flags] = 0.05
+    mds.inversion.min_parameters[flags] = 0.0
+    mds.inversion.max_parameters[flags] = 0.0
+
+    mds.transient = pyissm.model.classes.transient.deactivate_all(mds.transient)
+
+    mds.stressbalance.restol = 0.01
+    mds.stressbalance.reltol = 0.1
+    mds.stressbalance.abstol = np.nan
+    mds.settings.solver_residue_threshold = 1e-3
+
+    print(f"-- Setting-up coefficient grid...")
+    # Use preferred 101/103 coefficients from the friction sensitivity step; sweep regularisation.
+    param_grid = pyissm.inversion.sensitivity.build_parameter_grid(
+        {101: [friction_cf101],
+         103: [friction_cf103],
+         502: [1e-20, 1e-19, 1e-18, 1e-17, 1e-16, 1e-15, 1e-14, 1e-13, 1e-12]})
+
+    print(f"-- Defining mask to exclude 0 velocity...")
+    mask = (mds.inversion.vel_obs > 0)
+
+    if save:
+        print(f"-- Loading inversion parameter sensitivity...")
+        # Only mask 101 and 103 -- no mask on regularisation.
+        manifest = pyissm.inversion.sensitivity.parameter_sensitivity(
+            mds,
+            param_grid,
+            output_dir = f'{model_dir}/AIS3_ssa_friction_inv_lcurve',
+            run = False,
+            load_only = True,
+            coeff_masks = {101: mask,
+                           103: mask})
+
+        print(f"-- Processing inversion parameter sensitivity...")
+        diagnostics = pyissm.inversion.sensitivity.compute_sensitivity_diagnostics(manifest, output_dir=f'{model_dir}/AIS3_ssa_friction_inv_lcurve/')
+
+        fig, ax = pyissm.inversion.plot.plot_lcurve(diagnostics)
+        ax.set_title('Grounded ice friction inversion - L-curve analysis')
+        plt.savefig(f'{model_dir}/AIS3_ssa_friction_inv_lcurve/lcurve.png')
+
+    else:
+        print(f"-- Running inversion parameter sensitivity...")
+        # Only mask 101 and 103 -- no mask on regularisation.
+        manifest = pyissm.inversion.sensitivity.parameter_sensitivity(
+            mds,
+            param_grid,
+            output_dir = f'{model_dir}/AIS3_ssa_friction_inv_lcurve',
+            run = True,
+            load_only = False,
+            coeff_masks = {101: mask,
+                           103: mask})
+
+
+## ------------------------------------
+## Assemble inverted fields and solve stress balance - Full domain
+## ------------------------------------
+if 'ssa_inverted_solve' in steps:
+
+    print("-------------------------------------------------------------")
+    print(f" ASSEMBLING INVERTED MODEL AND SOLVING STRESS BALANCE"       )
+    print("-------------------------------------------------------------")
+
+    print(f"-- Loading parameterized model...")
+    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
+
+    print(f"-- Updating rheology B from floating-ice rheology L-curve ({rheology_lcurve_run})...")
+    mdr = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
+    md.materials.rheology_B[mdr.mesh.extractedvertices - 1] = mdr.results.StressbalanceSolution.MaterialsRheologyBbar # Note: -1 for zero-based indexing
+
+    print(f"-- Updating friction C from grounded-ice friction L-curve ({friction_lcurve_run})...")
+    mdf = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_friction_inv_lcurve/{friction_lcurve_run}/{friction_lcurve_run}.nc')
+    md.friction.C = md.friction.C.astype(float)
+    md.friction.C[mdf.mesh.extractedvertices - 1] = mdf.results.StressbalanceSolution.FrictionC # Note: -1 for zero-based indexing
+
+    # Fix negative effective pressure (consistent with the inversion setup)
+    N = md.friction.effective_pressure.copy()
+    N[N < 0] = 0
+    md.friction.effective_pressure = N
+    md.friction.effective_pressure_limit = 0.01
+
+    print('-- Removing icebergs from ice levelset...')
+    md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
+
+    print(f"-- Disabling inversion (forward solve only)...")
+    md.inversion.iscontrol = 0
+    md.verbose.solution = 1
+
+    print(f"-- Assigning cluster and updating settings...")
+    md.miscellaneous.name = 'AIS3_inverted'
+    md.cluster = cluster
+    md.settings.waitonlock = 0
+
+    if save:
+        print(f"-- Loading stress balance solution...")
+        md = pyissm.model.execute.solve(md, 'Stressbalance', load_only = True, runtime_name = False)
+
+        if diagnostics:
+            vel = md.results.StressbalanceSolution.Vel
+            vel_obs = md.inversion.vel_obs
+            residual = vel - vel_obs
+            print(f"\nFORWARD SOLVE DIAGNOSTICS:")
+            print(f"   Max modelled velocity: {np.nanmax(vel):.2f} m/yr")
+            print(f"   Velocity RMSE vs obs:  {np.sqrt(np.nanmean(residual**2)):.2f} m/yr")
+
+        if plot:
+            fig, ax = pyissm.plot.plot_model_field(md, md.results.StressbalanceSolution.Vel,
+                                                   show_cbar = True,
+                                                   cmap = 'PuOr',
+                                                   cbar_kwargs = {'label': 'Modelled velocity (m/a)'})
+            ax.set_title('Inverted model - SSA stress balance velocity')
+            plt.savefig(f'{model_dir}/AIS3_inverted_velocity.png')
+
+        print(f"\nSaving inverted model to {model_dir}/AIS3_inverted.nc")
+        pyissm.model.io.save_model(md, f'{model_dir}/AIS3_inverted.nc')
+
+    else:
+        print(f"-- Submitting stress balance solve...")
+        md = pyissm.model.execute.solve(md, 'Stressbalance', load_only = False, runtime_name = False)
+
+
+## ------------------------------------
+## Transient relaxation - Full domain
+## ------------------------------------
+if 'ssa_relaxation' in steps:
+
+    print("-------------------------------------------------------------")
+    print(f" TRANSIENT RELAXATION"                                       )
+    print("-------------------------------------------------------------")
+
+    print(f"-- Loading inverted model...")
+    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_inverted.nc')
+
+    print(f"-- Configuring transient relaxation...")
+    md.inversion.iscontrol = 0
+    md.verbose.solution = 1
+
+    # Relax the dynamics + free surface to damp initialisation shock.
+    # Thermal and SMB are held fixed; grounding line is allowed to migrate.
+    md.transient = pyissm.model.classes.transient.deactivate_all(md.transient)
+    md.transient.isstressbalance = 1
+    md.transient.ismasstransport = 1
+    md.transient.issmb = 1
+    md.transient.isthermal = 0
+    md.transient.isgroundingline = 1
+    md.groundingline.migration = 'SubelementMigration'
+    md.transient.requested_outputs = ['default', 'Vel', 'Thickness', 'Surface', 'Base', 'MaskOceanLevelset']
+
+    # Short relaxation window -- TODO: tune final_time / time_step for your domain.
+    md.timestepping.start_time = 0
+    md.timestepping.final_time = 20    # years
+    md.timestepping.time_step  = 0.05  # years
+
+    print(f"-- Assigning cluster and updating settings...")
+    md.miscellaneous.name = 'AIS3_relaxed'
+    md.cluster = cluster
+    md.settings.waitonlock = 0
+
+    if save:
+        print(f"-- Loading transient solution...")
+        md = pyissm.model.execute.solve(md, 'Transient', load_only = True, runtime_name = False)
+
+        if diagnostics:
+            dH = md.results.TransientSolution.Thickness[-1] - md.geometry.thickness
+            print(f"\nRELAXATION DIAGNOSTICS:")
+            print(f"   Max |dH| over relaxation: {np.nanmax(np.abs(dH)):.2f} m")
+            print(f"   Mean |dH| over relaxation: {np.nanmean(np.abs(dH)):.2f} m")
+
+        print(f"\nSaving relaxed model to {model_dir}/AIS3_relaxed.nc")
+        pyissm.model.io.save_model(md, f'{model_dir}/AIS3_relaxed.nc')
+
+    else:
+        print(f"-- Submitting transient relaxation...")
+        md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
