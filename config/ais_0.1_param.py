@@ -159,18 +159,59 @@ md.initialization.pressure = md.materials.rho_ice * md.constants.g * md.geometry
 ## --------- FRICTION --------- 
 print(f"\nDEFINING INITIAL FRICTION")
 
-# Use Schoof friction law
-md.friction = pyissm.model.classes.friction.schoof()
-md.friction.C = np.full(md.mesh.numberofvertices, 500)
-md.friction.Cmax = np.full(md.mesh.numberofvertices, 0.5)
-md.friction.m = np.full(md.mesh.numberofelements, 1/3)
+# Friction law switch. 'schoof' = regularized Coulomb (drag capped at Cmax*N, more physical for
+# fast marine sliding but the cap leaves ~0.34% of steep/low-N cells unfittable). 'budd' = Weertman
+# power law (no ceiling; a forward check showed it clears the Coulomb residual ~30x and converges
+# robustly at every coefficient, at the cost of the Iken bound). The main script (ais_0.1.py)
+# auto-detects the law from the saved friction class, so only this flag needs changing.
+friction_law = 'budd'  # 'schoof' or 'budd'
+
+if friction_law == 'schoof':
+    md.friction = pyissm.model.classes.friction.schoof()
+    # Initial guess for the Schoof friction coefficient. A forward-solve C sweep showed C=500 is
+    # ~10x too weak (grounded ice runs away to ~4e5 m/yr), while C~5000 brings the grounded
+    # velocity field into the physical range (median ~4 m/yr). Start the inversion here.
+    md.friction.C = np.full(md.mesh.numberofvertices, 5000)
+    md.friction.Cmax = np.full(md.mesh.numberofvertices, 0.85)
+    md.friction.m = np.full(md.mesh.numberofelements, 1/3)
+
+elif friction_law == 'budd':
+    md.friction = pyissm.model.classes.friction.default()  # Budd / Weertman power law
+    # tau_b = coefficient^2 * Neff^r * |u|^(s-1) * u, with s = 1/p, r = q/p. p=3,q=3 gives
+    # tau_b ~ N*|u|^(1/3) (Budd, linear N-dependence, m=3). A forward-coefficient sweep showed
+    # ~10-100 gives physical velocities (uniform values over-brake the interior; the inversion
+    # assigns coefficient spatially). Start the inversion around 10.
+    md.friction.coefficient = np.full(md.mesh.numberofvertices, 10.0)
+    md.friction.p = np.full(md.mesh.numberofelements, 3.0)
+    md.friction.q = np.full(md.mesh.numberofelements, 3.0)
+
+else:
+    raise ValueError(f"Unknown friction_law '{friction_law}' (expected 'schoof' or 'budd')")
 
 # Interpolate effective pressure from Ehrenfeucht et al. (2024) and assign it for use via md.friction.coupling
 md.friction.coupling = 3
 md.friction.effective_pressure = pyissm.data.interp.xr_to_mesh(ehrenfeucht_2024, 'effective_pressure', md.mesh.x, md.mesh.y)
 
-# Set NaN values to 0
-md.friction.effective_pressure = np.nan_to_num(md.friction.effective_pressure, nan = 0.0)
+# The Ehrenfeucht (2024) field contains NaNs (data gaps) and some non-physical negative
+# values. In the Schoof law basal drag is capped at Cmax * N, so any node with N <= 0
+# supplies ZERO drag and the forward SSA solve runs away (velocities -> 1e7 m/yr). Enforce
+# a physical positive floor N >= N_floor_frac * (rho_i * g * H), sized so the Coulomb cap
+# Cmax * N stays above the local driving stress (~surface_slope * rho_i * g * H).
+# A forward check with a 0.03 floor left ~0.64% of nodes (95% of them sitting at the floor)
+# running away: their ceiling Cmax*N = 0.85*0.03 = 0.026 of overburden fell below the local
+# driving stress. These are slow-observed interior cells where a higher N is more physical
+# anyway (thick cold-based ice has N ~ 10-50% of overburden), so raise the floor to 0.07
+# (ceiling 0.85*0.07 = 0.06 of overburden) to cover the steep-slope driving stresses.
+N_floor_frac = 0.07  # minimum effective pressure as a fraction of ice overburden
+N_floor = N_floor_frac * md.materials.rho_ice * md.constants.g * md.geometry.thickness
+
+N = md.friction.effective_pressure
+N = np.nan_to_num(N, nan = 0.0)   # replace data gaps before applying the floor
+N = np.maximum(N, N_floor)        # positive floor: removes negatives and zero-drag holes
+md.friction.effective_pressure = N
+
+# Also register the floor with the ISSM core so it is enforced during the solve
+md.friction.effective_pressure_limit = N_floor_frac
 
 ## -----------------------------------------
 ## --------- THERMAL BALANCE FIELDS --------

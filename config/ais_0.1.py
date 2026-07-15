@@ -1,5 +1,5 @@
 import pyissm
-import ccdtools
+import ccdtools as ccdtools
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -7,6 +7,18 @@ import numpy as np
 import geopandas as gpd
 import pandas as pd
 import os
+
+
+def friction_law_info(md):
+    """Return (control_parameter, field_attr, min_bound, max_bound) for md's friction law.
+
+    Schoof (regularized Coulomb) inverts 'FrictionC' (field md.friction.C); Budd/Weertman (the
+    'default' class) inverts 'FrictionCoefficient' (field md.friction.coefficient). The saved
+    friction class (set by friction_law in ais_0.1_param.py) is the single source of truth.
+    """
+    if type(md.friction).__name__ == 'default':   # Budd / Weertman power law
+        return 'FrictionCoefficient', 'coefficient', 0.01, 1e4
+    return 'FrictionC', 'C', 0.05, 250 ** 2        # Schoof (regularized Coulomb)
 
 ## ------------------------------------
 ## Configure options
@@ -55,6 +67,8 @@ all_steps = [
     'ssa_rheology_floating_inv_sensit',
     'ssa_rheology_floating_inv_lcurve',
     # 'ssa_rheology_floating_inv',
+    'ssa_friction_forward_check',
+    'ssa_friction_forward_check_budd',
     'ssa_friction_inv_sensit',
     'ssa_friction_inv_lcurve',
     'ssa_inverted_solve',
@@ -66,10 +80,13 @@ all_steps = [
 # steps = ['mesh', 'param']
 # steps = ['ssa_rheology_floating_inv_sensit']
 # steps = ['ssa_rheology_floating_inv_lcurve']
-# steps = ['ssa_friction_inv_sensit']
+# steps = ['ssa_friction_forward_check']
+# steps = ['ssa_friction_forward_check_budd']
+# steps = ['param']
 # steps = ['ssa_friction_inv_lcurve']
 # steps = ['ssa_inverted_solve']
 # steps = ['ssa_relaxation']
+# steps = ['param']
 steps = ['ssa_friction_inv_sensit']
 
 ## ------------------------------------
@@ -480,6 +497,186 @@ if 'ssa_rheology_floating_inv_lcurve' in steps:
 ## ------------------------------------
 ## SSA Friction Inversion Sensitivity - Grounded Ice
 ## ------------------------------------
+## ------------------------------------
+## SSA Forward Convergence Check - Friction Domain (no inversion)
+## ------------------------------------
+# Diagnostic: reproduce the friction inversion domain/BCs exactly, but disable the
+# inversion and impose a uniform, physically-reasonable friction C. Solve a SINGLE
+# forward stress balance and inspect whether the non-linear (viscosity) iteration
+# converges. If the forward solve diverges here, the friction inversion cannot work
+# regardless of the cost coefficients -- fix the forward model (BCs) first.
+if 'ssa_friction_forward_check' in steps:
+
+    print("-------------------------------------------------------------")
+    print(f" SSA FORWARD CONVERGENCE CHECK - FRICTION DOMAIN"            )
+    print("-------------------------------------------------------------")
+
+    print(f"-- Loading parameterized model...")
+    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
+
+    print(f"-- Loading SSA floating rheology inversion results ({rheology_lcurve_run})...")
+    mds = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
+
+    print(f"-- Updating rheology field from inversion results...")
+    md.materials.rheology_B[mds.mesh.extractedvertices - 1] = mds.results.StressbalanceSolution.MaterialsRheologyBbar # Note: -1 for zero-based indexing
+
+    print('-- Removing icebergs from ice levelset...')
+    md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
+
+    # Fix negative effective pressure (identical to the inversion setup)
+    N = md.friction.effective_pressure.copy()
+    N[N < 0] = 0
+    md.friction.effective_pressure = N
+    md.friction.effective_pressure_limit = 0.07  # match the N floor set in param
+
+    # Extract ice EXCLUDING the ice-front elements (ice_levelset_elements < 0, not < 1).
+    # This makes the calving front the extracted-mesh boundary, where extract() imposes
+    # Dirichlet BCs (observed velocity) on every boundary node. The previous approach kept
+    # the ice-front elements and set the floating front to Neumann, which left ice-free
+    # front nodes unanchored -> ~21,600 shelf/front nodes ran away to ~1.7e7 m/yr regardless
+    # of C. Anchoring the front with Dirichlet (the documented AIS3_3 setup) fixes that.
+    print(f"-- Extracting ice only (EXCLUDING ice-front; Dirichlet on the front boundary)...")
+    ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
+    mds = md.extract(ice_levelset_elements < 0)
+
+    print(f"-- Disabling inversion (forward solve only)...")
+    mds.inversion.iscontrol = 0
+    mds.verbose.solution = 1  # print non-linear convergence to the log
+
+    # Identify purely-floating elements once (these get ~0 friction regardless of the sweep value)
+    ocean_elements = mds.mask.ocean_levelset[mds.mesh.elements - 1] # -1 for zero-based indexing
+    pos_e = np.where(np.min(ocean_elements, axis=1) < 0)[0]
+    flags = np.zeros(mds.mesh.numberofvertices, dtype=bool)
+    flags[mds.mesh.elements[pos_e, :] - 1] = True # -1 for zero-based indexing
+
+    mds.transient = pyissm.model.classes.transient.deactivate_all(mds.transient)
+
+    # Same non-linear solver tolerances as the inversion forward solves
+    mds.stressbalance.restol = 0.01
+    mds.stressbalance.reltol = 0.1
+    mds.stressbalance.abstol = np.nan
+    mds.settings.solver_residue_threshold = 1e-3
+
+    print(f"-- Assigning cluster and updating settings...")
+    mds.cluster = cluster
+    mds.settings.waitonlock = 0
+
+    # Sweep a few uniform grounded-ice C values. Basal drag scales like C^2, so this brackets
+    # the coefficient magnitude needed to tame the ice by orders of magnitude. If a large enough
+    # C brings velocities into the physical range, the fix is to raise the inversion bounds /
+    # rescale C; if even the largest value blows up, the friction is not coupling (a real bug).
+    forward_check_C_values = [5000]
+
+    for Cval in forward_check_C_values:
+        run_name = f'AIS3_friction_forward_check_C{Cval}'
+        print(f"\n-- Uniform grounded C = {Cval}  ({run_name}) --")
+
+        mds.friction.C = np.full(mds.mesh.numberofvertices, float(Cval))
+        mds.friction.C[flags] = 0.05
+        mds.miscellaneous.name = run_name
+
+        if save:
+            mdi = pyissm.model.execute.solve(mds, 'Stressbalance', load_only = True, runtime_name = False)
+            vel = np.asarray(mdi.results.StressbalanceSolution.Vel).ravel()
+            vel_obs = np.asarray(mdi.inversion.vel_obs).ravel()
+            grounded = (mdi.mask.ice_levelset < 0) & (mdi.mask.ocean_levelset > 0)
+            print(f"   obs max={np.nanmax(vel_obs):.0f} | mod max={np.nanmax(vel):.0f} "
+                  f"med={np.nanmedian(vel):.0f} | grounded med={np.nanmedian(vel[grounded]):.0f} "
+                  f"| nodes>1e4: {(vel > 1e4).sum()}/{vel.size} ({100*(vel > 1e4).mean():.1f}%)")
+        else:
+            pyissm.model.execute.solve(mds, 'Stressbalance', load_only = False, runtime_name = False)
+
+
+## ------------------------------------
+## SSA Forward Convergence Check - Friction Domain (BUDD law experiment)
+## ------------------------------------
+# Same friction domain and BCs as ssa_friction_forward_check, but replaces the Schoof
+# (regularized-Coulomb) law with the Budd/Weertman power law, which has NO Coulomb ceiling
+# (tau_b = coefficient^2 * Neff^r * |u|^(s-1) * u, r=q/p, s=1/p). Removing the Cmax*N cap
+# should eliminate the unfittable Coulomb-failure nodes and the inversion overshoot. Sweeps a
+# uniform coefficient to find the magnitude that gives physical velocities; if it does, Budd
+# is worth adopting for the friction inversion. Self-contained -- does not touch param or the
+# Schoof blocks, so both laws remain available for comparison.
+if 'ssa_friction_forward_check_budd' in steps:
+
+    print("-------------------------------------------------------------")
+    print(f" SSA FORWARD CHECK (BUDD LAW) - FRICTION DOMAIN"             )
+    print("-------------------------------------------------------------")
+
+    print(f"-- Loading parameterized model...")
+    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
+
+    print(f"-- Loading SSA floating rheology inversion results ({rheology_lcurve_run})...")
+    mdr = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
+    md.materials.rheology_B[mdr.mesh.extractedvertices - 1] = mdr.results.StressbalanceSolution.MaterialsRheologyBbar
+
+    print('-- Removing icebergs from ice levelset...')
+    md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
+
+    # Fix negative effective pressure (same floored N as the Schoof setup)
+    N = md.friction.effective_pressure.copy()
+    N[N < 0] = 0
+    md.friction.effective_pressure = N
+    md.friction.effective_pressure_limit = 0.07
+
+    print(f"-- Extracting ice only (EXCLUDING ice-front; Dirichlet on the front boundary)...")
+    ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
+    mds = md.extract(ice_levelset_elements < 0)
+
+    print(f"-- Switching friction law to Budd (default class, no Coulomb ceiling)...")
+    # default(other) inherits effective_pressure / limit / coupling from the Schoof friction.
+    # p, q are per-element: s = 1/p, r = q/p. p=3, q=3 -> tau_b ~ N*|u|^(1/3) (Budd, linear
+    # N-dependence, m=3 sliding). Tune p/q as needed (q=0 -> Weertman, no N-dependence).
+    mds.friction = pyissm.model.classes.friction.default(mds.friction)
+    mds.friction.p = np.full(mds.mesh.numberofelements, 3.0)
+    mds.friction.q = np.full(mds.mesh.numberofelements, 3.0)
+    mds.friction.coupling = 3  # use the provided (floored) effective_pressure
+
+    print(f"-- Disabling inversion (forward solve only)...")
+    mds.inversion.iscontrol = 0
+    mds.verbose.solution = 1
+
+    # Purely-floating elements -> ~0 friction
+    ocean_elements = mds.mask.ocean_levelset[mds.mesh.elements - 1]
+    pos_e = np.where(np.min(ocean_elements, axis=1) < 0)[0]
+    flags = np.zeros(mds.mesh.numberofvertices, dtype=bool)
+    flags[mds.mesh.elements[pos_e, :] - 1] = True
+
+    mds.transient = pyissm.model.classes.transient.deactivate_all(mds.transient)
+    mds.stressbalance.restol = 0.01
+    mds.stressbalance.reltol = 0.1
+    mds.stressbalance.abstol = np.nan
+    mds.settings.solver_residue_threshold = 1e-3
+
+    print(f"-- Assigning cluster and updating settings...")
+    mds.cluster = cluster
+    mds.settings.waitonlock = 0
+
+    # Sweep uniform Budd coefficient (magnitude unknown a priori; brackets a few decades).
+    budd_coeff_values = [1, 10, 100, 1000]
+
+    for cval in budd_coeff_values:
+        run_name = f'AIS3_friction_forward_check_budd_{cval}'
+        print(f"\n-- Uniform Budd coefficient = {cval}  ({run_name}) --")
+        mds.friction.coefficient = np.full(mds.mesh.numberofvertices, float(cval))
+        mds.friction.coefficient[flags] = 0.05
+        mds.miscellaneous.name = run_name
+
+        if save:
+            mdi = pyissm.model.execute.solve(mds, 'Stressbalance', load_only = True, runtime_name = False)
+            vel = np.asarray(mdi.results.StressbalanceSolution.Vel).ravel()
+            vel_obs = np.asarray(mdi.inversion.vel_obs).ravel()
+            grounded = (mdi.mask.ice_levelset < 0) & (mdi.mask.ocean_levelset > 0)
+            print(f"   obs max={np.nanmax(vel_obs):.0f} | mod max={np.nanmax(vel):.0f} "
+                  f"med={np.nanmedian(vel):.0f} | grounded med={np.nanmedian(vel[grounded]):.0f} "
+                  f"| nodes>1e4: {(vel > 1e4).sum()}/{vel.size} ({100*(vel > 1e4).mean():.1f}%)")
+        else:
+            pyissm.model.execute.solve(mds, 'Stressbalance', load_only = False, runtime_name = False)
+
+
+## ------------------------------------
+## SSA Friction Inversion Sensitivity - Grounded Ice
+## ------------------------------------
 if 'ssa_friction_inv_sensit' in steps:
 
     print("-------------------------------------------------------------")
@@ -509,25 +706,29 @@ if 'ssa_friction_inv_sensit' in steps:
     N = md.friction.effective_pressure.copy()
     N[N < 0] = 0
     md.friction.effective_pressure = N
-    md.friction.effective_pressure_limit = 0.01
+    md.friction.effective_pressure_limit = 0.07  # match the N floor set in param
 
-    print(f"-- Extracting ice only (including ice-front)...")
+    # Extract ice EXCLUDING the ice-front elements (ice_levelset_elements < 0, not < 1) so the
+    # calving front becomes the extracted-mesh boundary, where extract() imposes Dirichlet
+    # (observed velocity) on every boundary node. The previous approach kept the ice-front and
+    # set the floating front to Neumann, leaving ice-free front nodes unanchored -> the shelves
+    # ran away to ~1e7 m/yr. Dirichlet-anchoring the front (AIS3_3) fixes that; validated in the
+    # ssa_friction_forward_check step.
+    print(f"-- Extracting ice only (EXCLUDING ice-front; Dirichlet on the front boundary)...")
     ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
-    mds = md.extract(ice_levelset_elements < 1)
-
-    # Set only Neumann BCs on the floating ice-front (Neumann with Dirichlet constraint elsewhere)
-    iceFront = (mds.mask.ice_levelset >= 0) & (mds.mask.ocean_levelset < 0)
-    mds.stressbalance.spcvx[iceFront] = np.nan
-    mds.stressbalance.spcvy[iceFront] = np.nan
-    mds.stressbalance.spcvz[iceFront] = np.nan
+    mds = md.extract(ice_levelset_elements < 0)
 
     print(f"-- Defining inversion parameters...")
     mds.inversion = pyissm.model.classes.inversion.m1qn3(mds.inversion)
-    mds.inversion.control_parameters = ['FrictionC']
-    mds.inversion.min_parameters = np.full(mds.mesh.numberofvertices, 0.05)
-    mds.inversion.max_parameters = np.full(mds.mesh.numberofvertices, 250**2) ## TODO: Set upper bound once better constrained
-    mds.inversion.maxsteps = 500
-    mds.inversion.maxiter = 200
+    fric_control, fric_field, fric_min, fric_max = friction_law_info(mds)  # Schoof or Budd
+    mds.inversion.control_parameters = [fric_control]
+    mds.inversion.min_parameters = np.full(mds.mesh.numberofvertices, fric_min)
+    mds.inversion.max_parameters = np.full(mds.mesh.numberofvertices, fric_max) ## TODO: Set upper bound once better constrained
+    # NOTE: The friction inversion converges in ~15 steps on this mesh; a large budget lets
+    # m1qn3 overshoot the minimum into a region where the forward SSA solve stops converging
+    # (100 nonlinear iterations exceeded) and the final iterate can be worse than the minimum.
+    mds.inversion.maxsteps = 30
+    mds.inversion.maxiter = 50
 
     print(f"-- Assigning cluster and updating settings...")
     mds.cluster = cluster
@@ -539,8 +740,9 @@ if 'ssa_friction_inv_sensit' in steps:
     pos_e = np.where(np.min(ocean_elements, axis=1) < 0)[0]
     flags = np.zeros(mds.mesh.numberofvertices, dtype=bool)
     flags[mds.mesh.elements[pos_e, :] - 1] = True # -1 for zero-based indexing
-    mds.friction.C = mds.friction.C.astype(float)
-    mds.friction.C[flags] = 0.05
+    _fld = getattr(mds.friction, fric_field).astype(float)
+    _fld[flags] = 0.05
+    setattr(mds.friction, fric_field, _fld)
     mds.inversion.min_parameters[flags] = 0.0
     mds.inversion.max_parameters[flags] = 0.0
 
@@ -558,6 +760,9 @@ if 'ssa_friction_inv_sensit' in steps:
 
     # TODO: Fill NaN obs vel with 0, not NN so that these regions can be excluded. Update in Param
     # TODO: Exclude ice-front from inversion as well -- mds.inversion.cost_functions_coefficients(iceFront, 1:2) = 0
+    # NOTE: An a-priori Coulomb-failure cost mask (tau_d = rho*g*H*|grad(s)| > Cmax*N) was tried
+    # here to drop unfittable nodes, but the static driving-stress proxy did not match the actual
+    # dynamic blowup cells (bulk fit unchanged, and it pushed some runs into overshoot). Reverted.
     print(f"-- Defining mask to exclude 0 velocity...")
     mask = (mds.inversion.vel_obs > 0)
 
@@ -634,25 +839,27 @@ if 'ssa_friction_inv_lcurve' in steps:
     N = md.friction.effective_pressure.copy()
     N[N < 0] = 0
     md.friction.effective_pressure = N
-    md.friction.effective_pressure_limit = 0.01
+    md.friction.effective_pressure_limit = 0.07  # match the N floor set in param
 
-    print(f"-- Extracting ice only (including ice-front)...")
+    # Extract ice EXCLUDING the ice-front elements (ice_levelset_elements < 0, not < 1) so the
+    # calving front becomes the extracted-mesh boundary, where extract() imposes Dirichlet
+    # (observed velocity) on every boundary node. The previous approach kept the ice-front and
+    # set the floating front to Neumann, leaving ice-free front nodes unanchored -> the shelves
+    # ran away to ~1e7 m/yr. Dirichlet-anchoring the front (AIS3_3) fixes that; validated in the
+    # ssa_friction_forward_check step.
+    print(f"-- Extracting ice only (EXCLUDING ice-front; Dirichlet on the front boundary)...")
     ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
-    mds = md.extract(ice_levelset_elements < 1)
-
-    # Set only Neumann BCs on the floating ice-front (Neumann with Dirichlet constraint elsewhere)
-    iceFront = (mds.mask.ice_levelset >= 0) & (mds.mask.ocean_levelset < 0)
-    mds.stressbalance.spcvx[iceFront] = np.nan
-    mds.stressbalance.spcvy[iceFront] = np.nan
-    mds.stressbalance.spcvz[iceFront] = np.nan
+    mds = md.extract(ice_levelset_elements < 0)
 
     print(f"-- Defining inversion parameters...")
     mds.inversion = pyissm.model.classes.inversion.m1qn3(mds.inversion)
-    mds.inversion.control_parameters = ['FrictionC']
-    mds.inversion.min_parameters = np.full(mds.mesh.numberofvertices, 0.05)
-    mds.inversion.max_parameters = np.full(mds.mesh.numberofvertices, 250**2) ## TODO: Set upper bound once better constrained
-    mds.inversion.maxsteps = 500
-    mds.inversion.maxiter = 200
+    fric_control, fric_field, fric_min, fric_max = friction_law_info(mds)  # Schoof or Budd
+    mds.inversion.control_parameters = [fric_control]
+    mds.inversion.min_parameters = np.full(mds.mesh.numberofvertices, fric_min)
+    mds.inversion.max_parameters = np.full(mds.mesh.numberofvertices, fric_max) ## TODO: Set upper bound once better constrained
+    # See note in ssa_friction_inv_sensit: keep the budget small to avoid overshooting the minimum.
+    mds.inversion.maxsteps = 30
+    mds.inversion.maxiter = 50
 
     print(f"-- Assigning cluster and updating settings...")
     mds.cluster = cluster
@@ -663,8 +870,9 @@ if 'ssa_friction_inv_lcurve' in steps:
     pos_e = np.where(np.min(ocean_elements, axis=1) < 0)[0]
     flags = np.zeros(mds.mesh.numberofvertices, dtype=bool)
     flags[mds.mesh.elements[pos_e, :] - 1] = True # -1 for zero-based indexing
-    mds.friction.C = mds.friction.C.astype(float)
-    mds.friction.C[flags] = 0.05
+    _fld = getattr(mds.friction, fric_field).astype(float)
+    _fld[flags] = 0.05
+    setattr(mds.friction, fric_field, _fld)
     mds.inversion.min_parameters[flags] = 0.0
     mds.inversion.max_parameters[flags] = 0.0
 
@@ -733,16 +941,18 @@ if 'ssa_inverted_solve' in steps:
     mdr = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
     md.materials.rheology_B[mdr.mesh.extractedvertices - 1] = mdr.results.StressbalanceSolution.MaterialsRheologyBbar # Note: -1 for zero-based indexing
 
-    print(f"-- Updating friction C from grounded-ice friction L-curve ({friction_lcurve_run})...")
+    print(f"-- Updating friction field from grounded-ice friction L-curve ({friction_lcurve_run})...")
     mdf = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_friction_inv_lcurve/{friction_lcurve_run}/{friction_lcurve_run}.nc')
-    md.friction.C = md.friction.C.astype(float)
-    md.friction.C[mdf.mesh.extractedvertices - 1] = mdf.results.StressbalanceSolution.FrictionC # Note: -1 for zero-based indexing
+    fric_control, fric_field, _, _ = friction_law_info(md)  # Schoof: FrictionC / C ; Budd: FrictionCoefficient / coefficient
+    _fld = getattr(md.friction, fric_field).astype(float)
+    _fld[mdf.mesh.extractedvertices - 1] = getattr(mdf.results.StressbalanceSolution, fric_control) # -1 for zero-based indexing
+    setattr(md.friction, fric_field, _fld)
 
     # Fix negative effective pressure (consistent with the inversion setup)
     N = md.friction.effective_pressure.copy()
     N[N < 0] = 0
     md.friction.effective_pressure = N
-    md.friction.effective_pressure_limit = 0.01
+    md.friction.effective_pressure_limit = 0.07  # match the N floor set in param
 
     print('-- Removing icebergs from ice levelset...')
     md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
