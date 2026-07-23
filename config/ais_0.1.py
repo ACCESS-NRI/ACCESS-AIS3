@@ -20,6 +20,43 @@ def friction_law_info(md):
         return 'FrictionCoefficient', 'coefficient', 0.01, 1e4
     return 'FrictionC', 'C', 0.05, 250 ** 2        # Schoof (regularized Coulomb)
 
+
+def extract_friction_inversion_domain(md):
+    """Extract the friction-inversion subdomain with a floating/grounded ice-front boundary condition.
+
+    Extracts ALL ice (ice_levelset_elements < 1, includes the ice-front elements), so the new
+    mesh boundary coincides exactly with the true, contiguous ice margin -- not an arbitrary
+    internal cut. extract() imposes Dirichlet (observed velocity) on every new boundary node by
+    default (see Model.py: "Boundary conditions: Dirichlets on new boundary"); this is reverted
+    to Neumann (NaN spc) at boundary nodes classified as floating (ocean_levelset < 0), i.e. true
+    ice-shelf calving fronts, where the natural ocean-pressure BC is physically correct. Boundary
+    nodes classified as grounded (ocean_levelset >= 0) -- both marine-terminating (bed below sea
+    level, no shelf) and true land-terminating (bed above sea level, no ocean to push back
+    against) -- keep extract()'s default Dirichlet, since Neumann has no obvious physical meaning
+    there. Classification is per-vertex (mds.mask.ocean_levelset), not per-element, so it follows
+    the true ice-front geometry exactly with no fragmentation.
+
+    A prior version anchored only the Ronne-Filchner/Ross fronts (the two largest floating
+    regions, found to blow up under pure Neumann at low friction coefficient) and left everything
+    else -- including land-terminating margins -- as Neumann. That fixed Ronne-Filchner/Ross but
+    left land-terminating margins with a physically meaningless Neumann BC, which was the actual
+    cause of a ~1e10 m/yr blowup at coeff=1 (confirmed: switching those margins to Dirichlet here
+    brought coeff=1 down to ~1.8e7 m/yr).
+    """
+    ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
+    mds = md.extract(ice_levelset_elements < 1)
+
+    bnd = mds.mesh.vertexonboundary.astype(bool)
+    ocean_ls = np.asarray(mds.mask.ocean_levelset).ravel()
+    floating_bnd = bnd & (ocean_ls < 0)
+
+    mds.stressbalance.spcvx[floating_bnd] = np.nan
+    mds.stressbalance.spcvy[floating_bnd] = np.nan
+    mds.stressbalance.spcvz[floating_bnd] = np.nan
+    mds.mask.ice_levelset[floating_bnd] = 0
+
+    return mds
+
 ## ------------------------------------
 ## Configure options
 ## ------------------------------------
@@ -87,7 +124,8 @@ all_steps = [
 # steps = ['ssa_inverted_solve']
 # steps = ['ssa_relaxation']
 # steps = ['param']
-steps = ['ssa_friction_inv_sensit']
+steps = ['ssa_friction_inv_lcurve']
+# steps = ['ssa_friction_inv_sensit']
 
 ## ------------------------------------
 ## Chosen inversion runs (update after inspecting sensit / lcurve diagnostics)
@@ -95,13 +133,27 @@ steps = ['ssa_friction_inv_sensit']
 # Floating-ice rheology B field taken from the rheology L-curve (cf502 regularisation).
 rheology_lcurve_run = 'run_004_1_10_1e-17'
 
-# Preferred 101/103 cost-function coefficients for the friction inversion (best run
-# from ssa_friction_inv_sensit -- UPDATE once that sweep has been inspected).
-friction_cf101 = 1
-friction_cf103 = 1
+# Preferred 101/103 cost-function coefficients for the friction inversion, chosen from the
+# floating/grounded-BC + coupling=3 sensit sweep (best cell by the library's combined
+# fit+smoothness score: run_021, cf101=1000/cf103=0.1, vel_rmse=960.5 -- the whole 25-cell grid
+# was smooth and outlier-free under coupling=3, unlike coupling=2 -- see note below).
+friction_cf101 = 1000
+friction_cf103 = 0.1
 
-# Grounded-ice friction C field taken from the friction L-curve (cf502 regularisation).
-# Built below once the friction L-curve has run -- UPDATE the cf502 value to the chosen corner.
+# Effective-pressure source for the friction law. coupling=2 (ISSM internal "uniform sheet"
+# hydrology, clamped >= 0) matched or beat coupling=3 (Ehrenfeucht dataset + manual N floor) in
+# the earlier *uniform-coefficient forward-check* sweep -- but the full floating/grounded-BC
+# inversion sensit sweep told a different story: coupling=2 has a specific, severe pathology at
+# certain coefficient cells (cf101=cf103=10 and cf101=cf103=1000 both spiked to vel_rmse~13,100,
+# ~13x every other cell) that the simpler forward-check never happened to probe. coupling=3 was
+# clean and outlier-free across the entire 25-cell grid (vel_rmse 962-1385, no spikes). Reverted
+# to coupling=3 on the strength of that full-grid evidence. AIS3_param.nc itself is also built
+# with friction_coupling=3 (see ais_0.1_param.py), so this now matches the param-file default.
+friction_coupling = 3
+
+# Grounded-ice friction C field taken from the friction L-curve (cf501 regularisation -- the
+# DragCoefficientAbsGradient term; see bug-fix note in the ssa_friction_inv_lcurve block).
+# Built below once the friction L-curve has run -- UPDATE the cf501 value to the chosen corner.
 friction_lcurve_run = f'run_004_{friction_cf101}_{friction_cf103}_1e-17'
 
 
@@ -529,15 +581,8 @@ if 'ssa_friction_forward_check' in steps:
     md.friction.effective_pressure = N
     md.friction.effective_pressure_limit = 0.07  # match the N floor set in param
 
-    # Extract ice EXCLUDING the ice-front elements (ice_levelset_elements < 0, not < 1).
-    # This makes the calving front the extracted-mesh boundary, where extract() imposes
-    # Dirichlet BCs (observed velocity) on every boundary node. The previous approach kept
-    # the ice-front elements and set the floating front to Neumann, which left ice-free
-    # front nodes unanchored -> ~21,600 shelf/front nodes ran away to ~1.7e7 m/yr regardless
-    # of C. Anchoring the front with Dirichlet (the documented AIS3_3 setup) fixes that.
-    print(f"-- Extracting ice only (EXCLUDING ice-front; Dirichlet on the front boundary)...")
-    ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
-    mds = md.extract(ice_levelset_elements < 0)
+    print(f"-- Extracting friction-inversion domain (floating/grounded ice-front BC)...")
+    mds = extract_friction_inversion_domain(md)
 
     print(f"-- Disabling inversion (forward solve only)...")
     mds.inversion.iscontrol = 0
@@ -619,9 +664,8 @@ if 'ssa_friction_forward_check_budd' in steps:
     md.friction.effective_pressure = N
     md.friction.effective_pressure_limit = 0.07
 
-    print(f"-- Extracting ice only (EXCLUDING ice-front; Dirichlet on the front boundary)...")
-    ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
-    mds = md.extract(ice_levelset_elements < 0)
+    print(f"-- Extracting friction-inversion domain (floating/grounded ice-front BC)...")
+    mds = extract_friction_inversion_domain(md)
 
     print(f"-- Switching friction law to Budd (default class, no Coulomb ceiling)...")
     # default(other) inherits effective_pressure / limit / coupling from the Schoof friction.
@@ -708,15 +752,11 @@ if 'ssa_friction_inv_sensit' in steps:
     md.friction.effective_pressure = N
     md.friction.effective_pressure_limit = 0.07  # match the N floor set in param
 
-    # Extract ice EXCLUDING the ice-front elements (ice_levelset_elements < 0, not < 1) so the
-    # calving front becomes the extracted-mesh boundary, where extract() imposes Dirichlet
-    # (observed velocity) on every boundary node. The previous approach kept the ice-front and
-    # set the floating front to Neumann, leaving ice-free front nodes unanchored -> the shelves
-    # ran away to ~1e7 m/yr. Dirichlet-anchoring the front (AIS3_3) fixes that; validated in the
-    # ssa_friction_forward_check step.
-    print(f"-- Extracting ice only (EXCLUDING ice-front; Dirichlet on the front boundary)...")
-    ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
-    mds = md.extract(ice_levelset_elements < 0)
+    print(f"-- Extracting friction-inversion domain (floating/grounded ice-front BC)...")
+    mds = extract_friction_inversion_domain(md)
+
+    print(f"-- Overriding friction.coupling = {friction_coupling}...")
+    mds.friction.coupling = friction_coupling
 
     print(f"-- Defining inversion parameters...")
     mds.inversion = pyissm.model.classes.inversion.m1qn3(mds.inversion)
@@ -727,6 +767,10 @@ if 'ssa_friction_inv_sensit' in steps:
     # NOTE: The friction inversion converges in ~15 steps on this mesh; a large budget lets
     # m1qn3 overshoot the minimum into a region where the forward SSA solve stops converging
     # (100 nonlinear iterations exceeded) and the final iterate can be worse than the minimum.
+    # VERIFIED: a maxsteps=500/200 test sweep (matching the rheology budget) OOM-killed 17/25
+    # cells at the 100GB ceiling -- the well-behaved cells converge at ~14 steps (so more budget
+    # changes nothing), while the rest overshoot into non-converging forward solves that run away
+    # on memory. Keep the budget small; 30/50 is the deliberate protection against this.
     mds.inversion.maxsteps = 30
     mds.inversion.maxiter = 50
 
@@ -841,15 +885,11 @@ if 'ssa_friction_inv_lcurve' in steps:
     md.friction.effective_pressure = N
     md.friction.effective_pressure_limit = 0.07  # match the N floor set in param
 
-    # Extract ice EXCLUDING the ice-front elements (ice_levelset_elements < 0, not < 1) so the
-    # calving front becomes the extracted-mesh boundary, where extract() imposes Dirichlet
-    # (observed velocity) on every boundary node. The previous approach kept the ice-front and
-    # set the floating front to Neumann, leaving ice-free front nodes unanchored -> the shelves
-    # ran away to ~1e7 m/yr. Dirichlet-anchoring the front (AIS3_3) fixes that; validated in the
-    # ssa_friction_forward_check step.
-    print(f"-- Extracting ice only (EXCLUDING ice-front; Dirichlet on the front boundary)...")
-    ice_levelset_elements = pyissm.tools.interp.vertex_to_element(md, md.mask.ice_levelset)
-    mds = md.extract(ice_levelset_elements < 0)
+    print(f"-- Extracting friction-inversion domain (floating/grounded ice-front BC)...")
+    mds = extract_friction_inversion_domain(md)
+
+    print(f"-- Overriding friction.coupling = {friction_coupling}...")
+    mds.friction.coupling = friction_coupling
 
     print(f"-- Defining inversion parameters...")
     mds.inversion = pyissm.model.classes.inversion.m1qn3(mds.inversion)
@@ -857,7 +897,7 @@ if 'ssa_friction_inv_lcurve' in steps:
     mds.inversion.control_parameters = [fric_control]
     mds.inversion.min_parameters = np.full(mds.mesh.numberofvertices, fric_min)
     mds.inversion.max_parameters = np.full(mds.mesh.numberofvertices, fric_max) ## TODO: Set upper bound once better constrained
-    # See note in ssa_friction_inv_sensit: keep the budget small to avoid overshooting the minimum.
+    # See note in ssa_friction_inv_sensit: keep budget small (500/200 OOM-killed most cells).
     mds.inversion.maxsteps = 30
     mds.inversion.maxiter = 50
 
@@ -885,10 +925,15 @@ if 'ssa_friction_inv_lcurve' in steps:
 
     print(f"-- Setting-up coefficient grid...")
     # Use preferred 101/103 coefficients from the friction sensitivity step; sweep regularisation.
+    # BUG FIX: this is a FRICTION inversion, so the gradient regularisation is 501
+    # (DragCoefficientAbsGradient), NOT 502 (RheologyBbarAbsGradient). Using 502 here regularised
+    # a field that isn't a control parameter in this inversion, so it was inert -- which is why the
+    # earlier friction L-curve was flat across 5 orders of magnitude. 502 is correct only for the
+    # rheology-B inversion (see the ssa_rheology_floating_inv_lcurve block).
     param_grid = pyissm.inversion.sensitivity.build_parameter_grid(
         {101: [friction_cf101],
          103: [friction_cf103],
-         502: [1e-20, 1e-19, 1e-18, 1e-17, 1e-16, 1e-15, 1e-14, 1e-13, 1e-12]})
+         501: [1e-20, 1e-19, 1e-18, 1e-17, 1e-16, 1e-15, 1e-14, 1e-13, 1e-12]})
 
     print(f"-- Defining mask to exclude 0 velocity...")
     mask = (mds.inversion.vel_obs > 0)

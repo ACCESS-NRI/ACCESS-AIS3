@@ -145,10 +145,18 @@ md.initialization.vel = md.inversion.vel_obs.copy()
 ## --------- FLOW LAW --------- 
 print(f"\nDEFINING FLOW LAW")
 
-# Assume an ice temperature of -20C everywhere for now
 md.materials.rheology_n = 3.0 * np.ones(md.mesh.numberofelements)
-md.materials.rheology_B = pyissm.tools.materials.cuffey(273.15 - 20) * np.ones(md.mesh.numberofvertices)
 md.materials.rheology_law = 'Cuffey'
+# NOTE: rheology_B is deliberately NOT set here. It is derived from the RACMO surface temperature
+# field further below (see "SURFACE TEMPERATURE"), which does not exist yet at this point.
+#
+# It was previously hardcoded to a uniform cuffey(273.15 - 20) = 2.027e8 placeholder ("assume -20C
+# everywhere for now"). That collapsed a ~17x real spatial viscosity range (cuffey(T) spans
+# 8.5e7 -> 1.43e9 over the RACMO range -62C..-2C) onto a single value, leaving 51% of grounded
+# vertices wrong by >20% (up to 7x too stiff in the cold interior, 2.4x too soft at the margins).
+# This was the dominant source of the large, structured (non-white) velocity residuals in the ice
+# streams and on the big ice shelves -- an error that NO friction inversion can correct, because
+# friction acts on the bed while the error lives in the ice viscosity.
 
 ## --------- PRESSURE --------- 
 print(f"\nDEFINING INITIAL PRESSURE")
@@ -188,29 +196,50 @@ elif friction_law == 'budd':
 else:
     raise ValueError(f"Unknown friction_law '{friction_law}' (expected 'schoof' or 'budd')")
 
-# Interpolate effective pressure from Ehrenfeucht et al. (2024) and assign it for use via md.friction.coupling
-md.friction.coupling = 3
-md.friction.effective_pressure = pyissm.data.interp.xr_to_mesh(ehrenfeucht_2024, 'effective_pressure', md.mesh.x, md.mesh.y)
+# Effective-pressure (Neff) source for the friction law.
+#   3 = use the provided md.friction.effective_pressure (Ehrenfeucht et al. 2024, floored below).
+#       CURRENT / VALIDATED: Budd + coupling=3 gives clean 25/25 convergence and bulk_rmse
+#       ~376-491 m/yr with a Dirichlet-anchored ice-front. Do not change without re-validating.
+#   2 = ISSM's internal 'uniform sheet' hydrology proxy, clamped >= 0 by the core. FOLLOW-UP
+#       EXPERIMENT (not yet run): sidesteps the Ehrenfeucht dataset's NaNs/negatives entirely
+#       instead of patching them with our manual floor -- worth comparing against the coupling=3
+#       result once the current inversion pipeline is done. Needs its own forward-check +
+#       sensit validation cycle before trusting it (same process used to validate Budd itself).
+#   DO NOT use 0 (the friction.default() class default): it explicitly allows negative Neff.
+#   Our Budd exponents give r = q/p = 1 (linear in N), so a negative N flips basal drag from
+#   resistive to driving -- the same destabilizing failure mode the N floor below was built to
+#   fix, just reintroduced from a different source.
+friction_coupling = 3  # 3 (Ehrenfeucht, current) or 2 (ISSM internal hydrology, follow-up)
+md.friction.coupling = friction_coupling
 
-# The Ehrenfeucht (2024) field contains NaNs (data gaps) and some non-physical negative
-# values. In the Schoof law basal drag is capped at Cmax * N, so any node with N <= 0
-# supplies ZERO drag and the forward SSA solve runs away (velocities -> 1e7 m/yr). Enforce
-# a physical positive floor N >= N_floor_frac * (rho_i * g * H), sized so the Coulomb cap
-# Cmax * N stays above the local driving stress (~surface_slope * rho_i * g * H).
-# A forward check with a 0.03 floor left ~0.64% of nodes (95% of them sitting at the floor)
-# running away: their ceiling Cmax*N = 0.85*0.03 = 0.026 of overburden fell below the local
-# driving stress. These are slow-observed interior cells where a higher N is more physical
-# anyway (thick cold-based ice has N ~ 10-50% of overburden), so raise the floor to 0.07
-# (ceiling 0.85*0.07 = 0.06 of overburden) to cover the steep-slope driving stresses.
-N_floor_frac = 0.07  # minimum effective pressure as a fraction of ice overburden
-N_floor = N_floor_frac * md.materials.rho_ice * md.constants.g * md.geometry.thickness
+if friction_coupling == 3:
+    # Interpolate effective pressure from Ehrenfeucht et al. (2024)
+    md.friction.effective_pressure = pyissm.data.interp.xr_to_mesh(ehrenfeucht_2024, 'effective_pressure', md.mesh.x, md.mesh.y)
 
-N = md.friction.effective_pressure
-N = np.nan_to_num(N, nan = 0.0)   # replace data gaps before applying the floor
-N = np.maximum(N, N_floor)        # positive floor: removes negatives and zero-drag holes
-md.friction.effective_pressure = N
+    # The Ehrenfeucht (2024) field contains NaNs (data gaps) and some non-physical negative
+    # values. In the Schoof law basal drag is capped at Cmax * N, so any node with N <= 0
+    # supplies ZERO drag and the forward SSA solve runs away (velocities -> 1e7 m/yr). Enforce
+    # a physical positive floor N >= N_floor_frac * (rho_i * g * H), sized so the Coulomb cap
+    # Cmax * N stays above the local driving stress (~surface_slope * rho_i * g * H).
+    # A forward check with a 0.03 floor left ~0.64% of nodes (95% of them sitting at the floor)
+    # running away: their ceiling Cmax*N = 0.85*0.03 = 0.026 of overburden fell below the local
+    # driving stress. These are slow-observed interior cells where a higher N is more physical
+    # anyway (thick cold-based ice has N ~ 10-50% of overburden), so raise the floor to 0.07
+    # (ceiling 0.85*0.07 = 0.06 of overburden) to cover the steep-slope driving stresses.
+    N_floor_frac = 0.07  # minimum effective pressure as a fraction of ice overburden
+    N_floor = N_floor_frac * md.materials.rho_ice * md.constants.g * md.geometry.thickness
 
-# Also register the floor with the ISSM core so it is enforced during the solve
+    N = md.friction.effective_pressure
+    N = np.nan_to_num(N, nan = 0.0)   # replace data gaps before applying the floor
+    N = np.maximum(N, N_floor)        # positive floor: removes negatives and zero-drag holes
+    md.friction.effective_pressure = N
+else:
+    # coupling=2: ISSM computes Neff internally (uniform sheet, clamped >= 0); no external
+    # effective_pressure array needed. Still apply the same floor fraction as a safety net.
+    N_floor_frac = 0.07
+
+# Register the floor with the ISSM core so it is enforced during the solve (applies regardless
+# of coupling mode -- effective_pressure_limit is checked unconditionally in check_consistency).
 md.friction.effective_pressure_limit = N_floor_frac
 
 ## -----------------------------------------
@@ -247,3 +276,20 @@ ts_mesh = pyissm.data.interp.points_to_mesh(x, y, ts_1995_mean.to_numpy(), md.me
 
 # Assign to model and cap maximum temperature at 0 degC
 md.initialization.temperature = np.minimum(ts_mesh, 273.15)
+
+## --------- FLOW LAW: TEMPERATURE-DEPENDENT RHEOLOGY B ---------
+print(f"\nDEFINING RHEOLOGY B FROM TEMPERATURE (Cuffey)")
+
+# Derive rheology_B from the temperature field via the Cuffey relation. This replaces the former
+# uniform cuffey(-20C) placeholder (see the FLOW LAW block above for why that was wrong).
+md.materials.rheology_B = pyissm.tools.materials.cuffey(md.initialization.temperature)
+
+# CAVEAT: this uses the SURFACE temperature as a proxy for the depth-averaged temperature that SSA
+# actually wants. Real ice warms with depth (geothermal flux + strain heating), so this biases B
+# somewhat too stiff, especially where the ice is thick. It nonetheless captures the dominant
+# spatial pattern (cold stiff interior vs warm soft margins/shelves) and is vastly better than a
+# single constant. TODO: revisit with a depth-averaged or thermal-model temperature if the
+# remaining residual warrants it.
+print(f"  rheology_B: min = {np.min(md.materials.rheology_B):.4g}, "
+      f"median = {np.median(md.materials.rheology_B):.4g}, "
+      f"max = {np.max(md.materials.rheology_B):.4g}")
