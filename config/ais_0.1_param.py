@@ -185,21 +185,37 @@ if friction_law == 'schoof':
 
 elif friction_law == 'budd':
     md.friction = pyissm.model.classes.friction.default()  # Budd / Weertman power law
-    # tau_b = coefficient^2 * Neff^r * |u|^(s-1) * u, with s = 1/p, r = q/p. p=3,q=3 gives
-    # tau_b ~ N*|u|^(1/3) (Budd, linear N-dependence, m=3). A forward-coefficient sweep showed
-    # ~10-100 gives physical velocities (uniform values over-brake the interior; the inversion
-    # assigns coefficient spatially). Start the inversion around 10.
-    md.friction.coefficient = np.full(md.mesh.numberofvertices, 10.0)
-    md.friction.p = np.full(md.mesh.numberofelements, 3.0)
-    md.friction.q = np.full(md.mesh.numberofelements, 3.0)
+    # tau_b = coefficient^2 * Neff^r * |u|^(s-1) * u, with s = 1/p, r = q/p. p=q=3 (u ~ C^-6)
+    # was the original choice (`friconly_nfix`, grounded RMSE 98.9, C_init=1.8, bounds
+    # [0.1,10], 192 m1qn3 iterations to dxmin) but was superseded: a direct p=q=1 (linear,
+    # u ~ C^-2) test under the SAME C_init/domain/cost-function setup, with m1qn3's gttol
+    # tightened to 1e-8 (see friction_inv_gttol below -- default 1e-4 was satisfied by
+    # iteration ~16 under p=1's much gentler gradient landscape, well before the fit was
+    # actually converged, a false "success" that silently capped every earlier p=1 attempt),
+    # reached grounded RMSE 61.4 -- beating p=3 by ~38%. Bounds widened to [0.05,900]: p=1's
+    # linear law needs much larger C than the cubic law for the same resisting stress, and
+    # the p=3-tuned [0.1,10] ceiling pinned 41% of the domain at C=10 under p=1. A light
+    # DragCoefficientAbsGradient regularisation (cf501=0.0001, warm-started from the
+    # unregularised p=1 solution) then dropped the C-field roughness from 0.82 to 0.18
+    # (matching p=3's own 0.17) with a further, not weaker, RMSE improvement to 60.4 --
+    # i.e. smoother AND more accurate at the same time, not a tradeoff. This is now the
+    # validated production configuration; see docs/inversion_worklog.md for the full
+    # investigation (gttol root cause, regularisation sweep, and why p=1 was never
+    # correctly tested until the gttol fix).
+    md.friction.coefficient = np.full(md.mesh.numberofvertices, 1.8)
+    md.friction.p = np.full(md.mesh.numberofelements, 1.0)
+    md.friction.q = np.full(md.mesh.numberofelements, 1.0)
 
 else:
     raise ValueError(f"Unknown friction_law '{friction_law}' (expected 'schoof' or 'budd')")
 
 # Effective-pressure (Neff) source for the friction law.
 #   3 = use the provided md.friction.effective_pressure (Ehrenfeucht et al. 2024, floored below).
-#       CURRENT / VALIDATED: Budd + coupling=3 gives clean 25/25 convergence and bulk_rmse
-#       ~376-491 m/yr with a Dirichlet-anchored ice-front. Do not change without re-validating.
+#       CURRENT / VALIDATED: Budd + coupling=3, with a Neumann (free) calving front (see
+#       extract_friction_inversion_domain() in ais_0.1.py) and C_init=1.8, converges cleanly to
+#       grounded RMSE 98.9 (`friconly_nfix`, 192 m1qn3 iterations to dxmin). The 376-491 bulk_rmse
+#       figure previously here predates the C_init fix above and the switch to a Neumann front;
+#       it is stale. Do not change coupling without re-validating.
 #   2 = ISSM's internal 'uniform sheet' hydrology proxy, clamped >= 0 by the core. FOLLOW-UP
 #       EXPERIMENT (not yet run): sidesteps the Ehrenfeucht dataset's NaNs/negatives entirely
 #       instead of patching them with our manual floor -- worth comparing against the coupling=3
