@@ -69,6 +69,38 @@ def extract_friction_inversion_domain(md):
 
     return mds
 
+
+def load_shelf_rheology_B():
+    """Load the validated floating-shelf rheology inversion result (extractedvertices, B).
+
+    execution_newB_rheology/run_001_1_10_1e-17 (2026-07-20) supersedes
+    models/AIS3_ssa_rheology_floating_inv_lcurve/run_004_1_10_1e-17 (2026-06-30, the
+    `rheology_lcurve_run` config value): same regularisation point (cf101=1, cf103=10,
+    cf502=1e-17), recomputed later in this project after several geometry/N-flooring fixes
+    were developed (100m thickness floor, N re-flooring against it, etc.) -- run_004 predates
+    those fixes. This is the actual source the validated grounded-RMSE-60.4 friction result
+    was warm-started from; loading the stale run_004 instead was found (via a direct A/B
+    test) to reproduce RMSE ~114, not ~60 -- see docs/inversion_worklog.md. Not yet promoted
+    into the canonical models/AIS3_ssa_rheology_floating_inv_lcurve/ directory, so this loads
+    it from its original ad-hoc execution directory via solve(load_only=True) instead of
+    io.load_model().
+    """
+    _cl = pyissm.model.classes.cluster.gadi()
+    _cl.codepath = os.environ['ISSM_DIR'] + '/bin'
+    _cl.executionpath = '/g/data/au88/jh7060/ACCESS-AIS3/execution_newB_rheology'
+    _cl.login = 'jh7060'; _cl.project = 'au88'; _cl.storage = 'gdata/au88'
+
+    mshelf = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
+    mshelf.mask.ice_levelset = pyissm.model.param.kill_icebergs(mshelf)
+    sel = (mshelf.mask.ocean_levelset < 0) & (mshelf.mask.ice_levelset < 0)
+    mshelf = mshelf.extract(sel)
+    mshelf.cluster = _cl
+    mshelf.settings.waitonlock = 0
+    mshelf.inversion.iscontrol = 0
+    mshelf.miscellaneous.name = 'run_001_1_10_1e-17'
+    mr = pyissm.model.execute.solve(mshelf, 'Stressbalance', load_only = True, runtime_name = False, check_consistency = False)
+    return np.asarray(mr.mesh.extractedvertices).ravel(), np.asarray(mr.results.StressbalanceSolution.MaterialsRheologyBbar).ravel()
+
 ## ------------------------------------
 ## Configure options
 ## ------------------------------------
@@ -148,7 +180,10 @@ all_steps = [
 # steps = ['ssa_inverted_solve']
 # steps = ['ssa_relaxation']
 # steps = ['param']
-steps = ['param']
+# steps = ['param']
+# steps = ['ssa_inverted_solve']
+# steps = ['ssa_relaxation']
+steps = ['ho_thermal_steadystate']
 # steps = ['ssa_friction_inv_lcurve']
 # steps = ['ssa_friction_inv_sensit']
 
@@ -169,6 +204,12 @@ rheology_lcurve_run = 'run_004_1_10_1e-17'
 friction_cf101 = 10
 friction_cf103 = 100
 
+# Mirrors friction_law in ais_0.1_param.py -- that flag only lives inside ais_0.1_param.py's
+# own exec-scope (set on md.friction when 'param' in steps calls parameterize(), see below),
+# so it isn't otherwise visible here at module load time where friction_lcurve_run (needed by
+# ssa_inverted_solve) is defined. Keep this in sync with ais_0.1_param.py by hand.
+friction_law = 'schoof'  # 'schoof' or 'budd' -- must match ais_0.1_param.py
+
 # Effective-pressure source for the friction law. coupling=2 (ISSM internal "uniform sheet"
 # hydrology, clamped >= 0) matched or beat coupling=3 (Ehrenfeucht dataset + manual N floor) in
 # the earlier *uniform-coefficient forward-check* sweep -- but the full floating/grounded-BC
@@ -188,6 +229,18 @@ friction_coupling = 3
 # in this pipeline instead stops on dxmin (step-size), the genuine convergence criterion.
 friction_inv_gttol = 1e-8
 
+# Dirichlet-pin two known-unstable regions (Institute/Moller Ice Stream band + an isolated
+# cluster near x~350km,y~-1933km) to observed velocity during the friction inversion, instead
+# of leaving them free -- mirrors Felicity's own constrain_Budd.exp/constrain_Schoof.exp
+# pattern (runme.m: Inversion_Friction_Budd/Schoof). Built from diag_schoof_blowup_v2.py's
+# worst-25 grounded vertices (all sat at the 100m thickness floor with driving stress
+# exceeding Cmax*N under Schoof -- see docs/inversion_worklog.md). Root cause of that specific
+# blowup turned out to be the forced-Newton solver setting (isnewton=2), not geometry, so this
+# flag is OFF by default until an actual A/B test shows it changes anything for Budd -- see
+# ssa_friction_inv_reg_lcurve below.
+use_constrain_regions = False
+constrain_exp_file = '/g/data/au88/jh7060/ACCESS-AIS3/assets/constrain_Budd.exp'
+
 # Grounded-ice friction C field, in two stages (see ssa_friction_inv_lcurve /
 # ssa_friction_inv_reg_lcurve below):
 #   1. `friction_baseline_run` -- the UNREGULARISED (cf501 effectively off) p=q=1 baseline,
@@ -197,8 +250,20 @@ friction_inv_gttol = 1e-8
 #      regularisation (cf501). cf501=0.0001 is the validated corner: it drops the C-field
 #      roughness to 0.18 (matching p=q=3) while the RMSE *improves* further, to 60.4 -- not a
 #      tradeoff, both axes move the same direction. This is the field `ssa_inverted_solve` uses.
-friction_baseline_run = f'run_001_{friction_cf101}_{friction_cf103}_1e-08'
-friction_lcurve_run = f'run_001_{friction_cf101}_{friction_cf103}_0.0001'
+#
+# The Budd naming pattern above (run_001_{cf101}_{cf103}_{cf501}) is specific to the Budd
+# L-curve sweep; it does not apply to the Schoof m1qn3 continuation run (different control
+# parameter, different script, not a cf501 grid point), so this is branched on friction_law
+# rather than reused. See friction_law in ais_0.1_param.py for the full rationale for the
+# current Schoof choice; ssa_friction_inv_reg_lcurve has never actually been run for Schoof --
+# this points at the scratchpad-run tight-restol result saved into this same directory
+# structure by finalize_schoof_friction_result.py, not a production-pipeline output.
+if friction_law == 'schoof':
+    friction_baseline_run = 'schoof_m1qn3_tightrestol_cmax2.0'
+    friction_lcurve_run = 'schoof_m1qn3_tightrestol_cmax2.0'
+else:
+    friction_baseline_run = f'run_001_{friction_cf101}_{friction_cf103}_1e-08'
+    friction_lcurve_run = f'run_001_{friction_cf101}_{friction_cf103}_0.0001'
 
 
 ## ------------------------------------
@@ -225,7 +290,7 @@ if 'process_domain' in steps:
 
     # Write buffered extent to file for use as model domain
     print(f" - Saving to file...")
-    pyissm.tools.exp.gdf_to_exp(coastline_100km_buffer, '/g/data1b/au88/jh7060/ACCESS-AIS3/assets/ais_domain.exp')
+    pyissm.tools.exp.gdf_to_exp(coastline_100km_buffer, '/g/data/au88/jh7060/ACCESS-AIS3/assets/ais_domain.exp')
 
 
 ## ------------------------------------
@@ -913,11 +978,11 @@ if 'ssa_friction_inv_lcurve' in steps:
     print(f"-- Loading parameterized model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
 
-    print(f"-- Loading SSA floating rheology inversion results...")
-    mds = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
+    print(f"-- Loading SSA floating rheology inversion results (execution_newB_rheology, see load_shelf_rheology_B docstring)...")
+    _ev, _Bshelf = load_shelf_rheology_B()
 
     print(f"-- Updating rheology field from inversion results...")
-    md.materials.rheology_B[mds.mesh.extractedvertices - 1] = mds.results.StressbalanceSolution.MaterialsRheologyBbar # Note: -1 for zero-based indexing
+    md.materials.rheology_B[_ev - 1] = _Bshelf # Note: -1 for zero-based indexing
 
     print('-- Removing icebergs from ice levelset...')
     md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
@@ -1007,11 +1072,13 @@ if 'ssa_friction_inv_lcurve' in steps:
     mds.cluster = cluster
     mds.settings.waitonlock = 0
 
-    # No friction on PURELY floating ice elements
-    ocean_elements = mds.mask.ocean_levelset[mds.mesh.elements - 1] # -1 for zero-based indexing
-    pos_e = np.where(np.min(ocean_elements, axis=1) < 0)[0]
-    flags = np.zeros(mds.mesh.numberofvertices, dtype=bool)
-    flags[mds.mesh.elements[pos_e, :] - 1] = True # -1 for zero-based indexing
+    # No friction on floating ice vertices. BUGFIX: was previously element-based
+    # (np.min(ocean_elements, axis=1) < 0, i.e. ANY vertex of the element floating), which --
+    # despite the "PURELY floating ice elements" comment -- actually zeroed friction bounds on
+    # GROUNDED vertices merely adjacent to a floating one along the whole grounding line. The
+    # validated script (p1q1_reg_sweep2.py, which produced the actual RMSE 60.4/61.4 result)
+    # never used element logic at all -- plain per-vertex floating flags, matching here.
+    flags = np.asarray(mds.mask.ocean_levelset).ravel() < 0
     _fld = getattr(mds.friction, fric_field).astype(float)
     _fld[flags] = 0.05
     setattr(mds.friction, fric_field, _fld)
@@ -1096,11 +1163,11 @@ if 'ssa_friction_inv_reg_lcurve' in steps:
     print(f"-- Loading parameterized model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
 
-    print(f"-- Loading SSA floating rheology inversion results...")
-    mds = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
+    print(f"-- Loading SSA floating rheology inversion results (execution_newB_rheology, see load_shelf_rheology_B docstring)...")
+    _ev, _Bshelf = load_shelf_rheology_B()
 
     print(f"-- Updating rheology field from inversion results...")
-    md.materials.rheology_B[mds.mesh.extractedvertices - 1] = mds.results.StressbalanceSolution.MaterialsRheologyBbar
+    md.materials.rheology_B[_ev - 1] = _Bshelf
 
     print('-- Removing icebergs from ice levelset...')
     md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
@@ -1130,6 +1197,22 @@ if 'ssa_friction_inv_reg_lcurve' in steps:
     md.friction.effective_pressure = N
     md.friction.effective_pressure_limit = _lim
 
+    print(f"-- Define general control parameters...")
+    # BUGFIX: this step was missing this line entirely -- md.inversion.iscontrol defaults to 0
+    # on a fresh AIS3_param.nc load, and the m1qn3(mds.inversion) reconstruction below only
+    # INHERITS iscontrol from its input (pyissm/model/classes/inversion.py: m1qn3.__init__ ->
+    # super().__init__(other)), it doesn't set it. Without this, the step silently runs a
+    # single forward stress-balance solve ("computing new velocity" in the outlog) instead of
+    # an m1qn3 control inversion -- confirmed by direct A/B test (see docs/inversion_worklog.md):
+    # models/AIS3_ssa_friction_inv_reg_lcurve/ doesn't exist on disk, meaning this step has
+    # never actually been run since the p=1 restructuring; every "RMSE 60.4, cf501=0.0001"
+    # result referenced elsewhere in this project came from an ad-hoc scratchpad script
+    # (p1q1_reg_sweep2.py) that set this correctly, not from this production step.
+    md.inversion.iscontrol = 1
+    md.verbose.solution = 0
+    md.verbose.qmu = 0
+    md.verbose.control = 1
+
     print(f"-- Extracting friction-inversion domain (floating/grounded ice-front BC)...")
     mds = extract_friction_inversion_domain(md)
 
@@ -1142,6 +1225,22 @@ if 'ssa_friction_inv_reg_lcurve' in steps:
     _Nfs = 0.07 * mds.materials.rho_ice * mds.constants.g * _Hs
     mds.friction.effective_pressure = np.maximum(_Ns, _Nfs)
     mds.friction.effective_pressure_limit = 0.07
+
+    if use_constrain_regions:
+        print(f"-- Constraining velocity to observations inside {constrain_exp_file}...")
+        # Mirrors Felicity's Inversion_Friction_Budd pattern (runme.m:624-627): inside the
+        # polygon, spcvx/spcvy/spcvz are pinned to observed velocity (Dirichlet) instead of
+        # being left free for the inversion, so the solver can't drive velocity away from
+        # observations in the two known-unstable clusters this file encodes.
+        _cpos = pyissm.tools.wrappers.ContourToNodes(
+            np.asarray(mds.mesh.x).ravel(), np.asarray(mds.mesh.y).ravel(),
+            constrain_exp_file, 2).astype(bool)
+        _vxo = np.asarray(mds.inversion.vx_obs).ravel()
+        _vyo = np.asarray(mds.inversion.vy_obs).ravel()
+        mds.stressbalance.spcvx[_cpos] = _vxo[_cpos]
+        mds.stressbalance.spcvy[_cpos] = _vyo[_cpos]
+        mds.stressbalance.spcvz[_cpos] = 0
+        print(f"   pinned {int(_cpos.sum())} vertices to observed velocity")
 
     print(f"-- Warm-starting C from the unregularised baseline ({friction_baseline_run})...")
     # Warm-starting (rather than cold-starting each 501 grid point from C_init=1.8, as the
@@ -1169,11 +1268,13 @@ if 'ssa_friction_inv_reg_lcurve' in steps:
     mds.cluster = cluster
     mds.settings.waitonlock = 0
 
-    # No friction on PURELY floating ice elements
-    ocean_elements = mds.mask.ocean_levelset[mds.mesh.elements - 1]
-    pos_e = np.where(np.min(ocean_elements, axis=1) < 0)[0]
-    flags = np.zeros(mds.mesh.numberofvertices, dtype=bool)
-    flags[mds.mesh.elements[pos_e, :] - 1] = True
+    # No friction on floating ice vertices. BUGFIX: was previously element-based
+    # (np.min(ocean_elements, axis=1) < 0, i.e. ANY vertex of the element floating), which --
+    # despite the "PURELY floating ice elements" comment -- actually zeroed friction bounds on
+    # GROUNDED vertices merely adjacent to a floating one along the whole grounding line. The
+    # validated script (p1q1_reg_sweep2.py, which produced the actual RMSE 60.4/61.4 result)
+    # never used element logic at all -- plain per-vertex floating flags, matching here.
+    flags = np.asarray(mds.mask.ocean_levelset).ravel() < 0
     _fld = getattr(mds.friction, fric_field).astype(float)
     _fld[flags] = 0.05
     setattr(mds.friction, fric_field, _fld)
@@ -1265,8 +1366,27 @@ if 'ssa_inverted_solve' in steps:
     mdf = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_friction_inv_reg_lcurve/{friction_lcurve_run}/{friction_lcurve_run}.nc')
     fric_control, fric_field, _, _ = friction_law_info(md)  # Schoof: FrictionC / C ; Budd: FrictionCoefficient / coefficient
     _fld = getattr(md.friction, fric_field).astype(float)
-    _fld[mdf.mesh.extractedvertices - 1] = getattr(mdf.results.StressbalanceSolution, fric_control) # -1 for zero-based indexing
+    _grafted = np.asarray(getattr(mdf.results.StressbalanceSolution, fric_control)).ravel()
+    if fric_control == 'FrictionC':
+        # Schoof's saved C has literal 0 on floating ice (clamped there by the inversion's own
+        # min/max_parameters=0), which fails check_consistency's "friction.C > 0.0" requirement.
+        # Floor to a tiny positive value -- floating ice has N=0 too, so it's physically inert
+        # regardless (same fix used throughout this session's scratchpad scripts).
+        _grafted = np.maximum(_grafted, 0.01)
+    _fld[mdf.mesh.extractedvertices - 1] = _grafted # -1 for zero-based indexing
     setattr(md.friction, fric_field, _fld)
+
+    if fric_control == 'FrictionC':
+        # BUGFIX: only the C *field* was being grafted -- md.friction.Cmax was left at
+        # ais_0.1_param.py's own default (0.85, set fresh every 'param' run), NOT the Cmax
+        # this C field was actually fit under (2.0, the validated tightrestol continuation
+        # result). Confirmed as the cause of a second wave of extreme-velocity vertices
+        # (up to ~57,000 m/yr) after the thin-ice pin fix resolved the first, catastrophic
+        # wave: those vertices all showed Cmax=0.85 with substantial thickness/N, not the
+        # thin-ice signature -- i.e. C values calibrated to be safe under a loose Cmax=2.0
+        # ceiling suddenly hard-capped at a much tighter 0.85 ceiling they were never tuned
+        # for. Set explicitly to match the fitted value.
+        md.friction.Cmax = np.full(md.mesh.numberofvertices, 2.0)
 
     print('-- Removing icebergs from ice levelset...')
     md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
@@ -1278,14 +1398,38 @@ if 'ssa_inverted_solve' in steps:
     # for the full rationale.
     _ri = md.materials.rho_ice; _rw = md.materials.rho_water
     _H = np.asarray(md.geometry.thickness).ravel().copy()
+    _H_orig = _H.copy()  # pre-floor thickness, used below to identify thin-ice vertices
     _ol = np.asarray(md.mask.ocean_levelset).ravel()
     _surf0 = np.asarray(md.geometry.surface).ravel().copy()
+    _bed = np.asarray(md.geometry.bed).ravel()
     _H = np.maximum(_H, 100.0)
     _flt = _ol < 0
     _base = np.empty_like(_H); _surf = np.empty_like(_H)
     _base[_flt] = -_H[_flt] * _ri / _rw; _surf[_flt] = _H[_flt] * (1.0 - _ri / _rw)
-    _surf[~_flt] = _surf0[~_flt]
-    _base[~_flt] = _surf0[~_flt] - _H[~_flt]
+    # BUGFIX: hydrostatic floating draft can occasionally sit below the local seafloor
+    # (base < bed) -- a second, separate consistency failure caught by the same
+    # ssa_relaxation check once the grounded base=bed fix above cleared the first one.
+    # Clamp the floating base at bed as a numerical floor; leaves the ocean_levelset
+    # floating/grounded classification untouched (not attempting a full grounding-line
+    # reclassification here), just prevents the ice keel from being placed underground.
+    _base[_flt] = np.maximum(_base[_flt], _bed[_flt])
+    # Keep thickness=surface-base self-consistent wherever the clamp above actually moved
+    # base (a no-op at every other floating vertex, since surf was already H*(1-ri/rw) there,
+    # which equals base+H when base is the unclamped hydrostatic value).
+    _surf[_flt] = _base[_flt] + _H[_flt]
+    # BUGFIX: grounded base was previously set to (original surface - floored thickness),
+    # which is only consistent with the true bed for vertices that weren't actually floored.
+    # Anywhere thickness WAS floored (H_orig<100), this pushed base below the real bed by
+    # exactly the amount added -- caught by ssa_relaxation's transient/masstransport
+    # consistency check ("base < bed", "base=bed on grounded ice violated"), which
+    # ssa_inverted_solve's own stress-balance-only solve never exercises. Grounded ice must
+    # have base=bed by definition; the original "preserve observed surface" design was
+    # actually incompatible with that once thickness is floored (bed is fixed real
+    # topography, so raising thickness has to raise the surface instead). Surface only
+    # changes from the observed value at the ~85,000 vertices that were already thin/floored;
+    # everywhere else this is a no-op (surf0 - H_orig == bed there already).
+    _base[~_flt] = _bed[~_flt]
+    _surf[~_flt] = _bed[~_flt] + _H[~_flt]
     md.geometry.thickness = _H; md.geometry.base = _base; md.geometry.surface = _surf
 
     # Fix negative effective pressure (consistent with the inversion setup)
@@ -1297,6 +1441,80 @@ if 'ssa_inverted_solve' in steps:
     md.friction.effective_pressure = N
     md.friction.effective_pressure_limit = _lim
 
+    if fric_control == 'FrictionC':
+        # Scoped fix for a known, documented Schoof failure mode (docs/inversion_worklog.md
+        # 5.4): at the thickness floor, N_floor = 0.07*rho_ice*g*H is weak (~6300 Pa at
+        # H=100m), so Schoof's yield ceiling Cmax*N is only ~5000-12600 Pa -- nowhere near
+        # enough to hold back driving stress on steep terrain. Unlike Budd (resistance keeps
+        # growing, however weakly, with velocity, so Newton always finds a finite
+        # equilibrium), Schoof's resistance is hard-capped: once driving stress exceeds the
+        # cap there is no equilibrium at any finite velocity. First full-mesh attempt with
+        # this Schoof result confirmed this exact signature: all 24 catastrophic-velocity
+        # vertices (up to 3e19 m/yr) sat at/near the original (pre-floor) thickness floor,
+        # inside the friction-inversion subdomain where this C field was fit. Raising the
+        # floor doesn't fix this -- N_floor scales with H, so any floor value has the same
+        # weak-yield-ceiling problem somewhere steep enough. Dirichlet-pinning these specific
+        # vertices to observed velocity sidesteps the gap without touching the C field
+        # elsewhere -- same pattern as this pipeline's existing constrain_Schoof.exp regions
+        # and Felicity's own Inversion_Friction_Schoof approach.
+        print(f"-- Pinning thin-ice vertices in the Schoof-fitted subdomain to observed velocity (known Coulomb-cap/thin-ice instability, see docs/inversion_worklog.md 5.4)...")
+        _in_subdomain = np.zeros(md.mesh.numberofvertices, dtype=bool)
+        _in_subdomain[mdf.mesh.extractedvertices - 1] = True
+        _thin_orig = _H_orig <= 100.0
+        _has_obs = np.asarray(md.inversion.vel_obs).ravel() > 0
+        _vxo = np.asarray(md.inversion.vx_obs).ravel()
+        _vyo = np.asarray(md.inversion.vy_obs).ravel()
+        _pin = _thin_orig & _in_subdomain & _has_obs
+        md.stressbalance.spcvx[_pin] = _vxo[_pin]
+        md.stressbalance.spcvy[_pin] = _vyo[_pin]
+        md.stressbalance.spcvz[_pin] = 0
+        print(f"   pinned {int(_pin.sum())} thin-ice vertices ({int((_thin_orig&_in_subdomain).sum())} thin-and-in-subdomain, {int((_thin_orig&_in_subdomain&~_has_obs).sum())} had no observation to pin to)")
+
+        # Second, separate wave of extreme velocities (up to ~57,000 m/yr) survived the
+        # thin-ice pin above and the Cmax fix. Investigated directly: not yield-cap-limited
+        # (driving stress exceeded the Coulomb ceiling at only 7 of 835 extreme vertices),
+        # not a solver-tolerance artifact (identical result at residue_threshold=1e-3 and
+        # 1e-5), and not really a sharp bound-clamping discontinuity either (only 2 of 835
+        # showed that specific pattern). What the remaining 833 do share: 715 of them sit
+        # exactly at the lower C bound (50) -- the inversion wanted less resistance than the
+        # bound allowed, over broad contiguous patches, not a localised artifact. Rather than
+        # chase the exact numerical mechanism further, extend the same Dirichlet-pin approach
+        # (safe by construction: pins to the actual observation, never wrong) to all grounded
+        # lower-bound-clamped vertices in the subdomain, not just the ~717 that happened to
+        # blow up this time -- the other ~84,700 don't misbehave now, but nothing guarantees
+        # that under a different warm-start/Cmax step.
+        print(f"-- Pinning grounded lower-bound-clamped (C<=50) vertices in the Schoof-fitted subdomain to observed velocity (second wave of extreme velocities, mechanism not fully isolated -- see comment above)...")
+        # BUGFIX: C<=50.01 alone also matched floating ice (floored to C=0.01, correctly, not
+        # an instability signature) -- first attempt pinned 310,476 vertices instead of the
+        # intended ~85,000 grounded ones, silently replacing floating-shelf physics with
+        # observations everywhere. Restricted to grounded (~_flt) to match original intent.
+        _at_lower_bound = _fld <= 50.01
+        _pin2 = _at_lower_bound & _in_subdomain & _has_obs & (~_pin) & (~_flt)
+        md.stressbalance.spcvx[_pin2] = _vxo[_pin2]
+        md.stressbalance.spcvy[_pin2] = _vyo[_pin2]
+        md.stressbalance.spcvz[_pin2] = 0
+        print(f"   pinned {int(_pin2.sum())} additional lower-bound-clamped vertices")
+
+        # Third wave: even after both pins above, the worst remaining offenders (by far the
+        # highest velocities, up to ~35,000 m/yr) are overwhelmingly classified ice_levelset
+        # >= 0 -- i.e. NOT ice at all. These are ice-front-ring vertices pulled into the
+        # friction-inversion subdomain by its element-level ice_levelset_elements<1 inclusion
+        # criterion (deliberately includes elements straddling the true margin), which can
+        # include individual vertices on the non-ice side of that boundary. They still
+        # received a fitted, non-floor C value from the graft, despite there being no real
+        # ice there to have meaningful velocity in the first place -- neither the thin-ice nor
+        # the lower-bound-C criterion reliably catches them (thickness/C at these vertices
+        # doesn't consistently fall in either range). Pin directly on the ice_levelset>=0
+        # classification instead.
+        print(f"-- Pinning non-ice-classified (ice_levelset>=0) vertices in the Schoof-fitted subdomain to observed velocity (third wave, worst remaining offenders)...")
+        _ice_full = np.asarray(md.mask.ice_levelset).ravel()
+        _nonice = _ice_full >= 0
+        _pin3 = _nonice & _in_subdomain & _has_obs & (~_pin) & (~_pin2)
+        md.stressbalance.spcvx[_pin3] = _vxo[_pin3]
+        md.stressbalance.spcvy[_pin3] = _vyo[_pin3]
+        md.stressbalance.spcvz[_pin3] = 0
+        print(f"   pinned {int(_pin3.sum())} additional non-ice-classified vertices")
+
     print(f"-- Disabling inversion (forward solve only)...")
     md.inversion.iscontrol = 0
     md.verbose.solution = 1
@@ -1304,11 +1522,33 @@ if 'ssa_inverted_solve' in steps:
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_inverted'
     md.cluster = cluster
-    md.settings.waitonlock = 0
+    # BUGFIX: this step previously set waitonlock=0 (disables blocking-wait) but then called
+    # solve() with load_only=True, which never submits a job -- it only loads results from an
+    # already-finished prior run (pyissm/model/execute.py:1078-1082, unconditional early
+    # return). There is no earlier load_only=False submission anywhere in this step, so it has
+    # never actually completed a real run before (confirmed: "Binary file AIS3_inverted.outbin
+    # not found" on the first real attempt). Fixed to the single-call synchronous pattern:
+    # load_only=False actually submits, and waitonlock>0 makes solve() block internally,
+    # polling for the cluster job's lock file, then auto-load results in the same call.
+    md.settings.waitonlock = 120  # minutes
+    # Every other step in this pipeline sets this explicitly to 1e-3; ssa_inverted_solve was
+    # the one exception, silently left at ISSM's much tighter 1e-6 default. First real attempt
+    # hit "solver residue too high! norm(KU-F)/norm(F)=1.09e-06 > 1e-06" (marginal, ~9% over)
+    # on the very first linear solve, cascading into "Recovery solver failed" across many MPI
+    # ranks. 1e-3 (matching every other step) cleared that crash but is a 1000x loosening for
+    # a failure that was only ~9% over the original threshold -- traced as the likely cause of
+    # a second-wave problem: after the thin-ice pin and Cmax fixes, ~835 vertices scattered
+    # across many unrelated locations (not one cluster) still showed spurious velocities up to
+    # ~57,000 m/yr, but only 7 of them actually had driving stress exceeding the Schoof yield
+    # ceiling -- ruling out yield-cap physics and pointing at under-converged local solutions
+    # slipping through the loosened tolerance instead. Tightened to 1e-5, a much smaller step
+    # down from the 1e-6 default, to test whether that's enough to clear the original marginal
+    # failure without opening the door this wide.
+    md.settings.solver_residue_threshold = 1e-5
 
     if save:
-        print(f"-- Loading stress balance solution...")
-        md = pyissm.model.execute.solve(md, 'Stressbalance', load_only = True, runtime_name = False)
+        print(f"-- Submitting and waiting on stress balance solution...")
+        md = pyissm.model.execute.solve(md, 'Stressbalance', load_only = False, runtime_name = False)
 
         if diagnostics:
             vel = md.results.StressbalanceSolution.Vel
@@ -1319,7 +1559,10 @@ if 'ssa_inverted_solve' in steps:
             print(f"   Velocity RMSE vs obs:  {np.sqrt(np.nanmean(residual**2)):.2f} m/yr")
 
         if plot:
-            fig, ax = pyissm.plot.plot_model_field(md, md.results.StressbalanceSolution.Vel,
+            # BUGFIX: plot_model_field returns (fig, ax, trip) when ax isn't passed in
+            # (pyissm/plot/plot.py:562), not (fig, ax) as its own docstring claims -- this
+            # step never reached this line successfully before to catch it.
+            fig, ax, _trip = pyissm.plot.plot_model_field(md, md.results.StressbalanceSolution.Vel,
                                                    show_cbar = True,
                                                    cmap = 'PuOr',
                                                    cbar_kwargs = {'label': 'Modelled velocity (m/a)'})
@@ -1361,6 +1604,34 @@ if 'ssa_relaxation' in steps:
     md.groundingline.migration = 'SubelementMigration'
     md.transient.requested_outputs = ['default', 'Vel', 'Thickness', 'Surface', 'Base', 'MaskOceanLevelset']
 
+    # BUGFIX: masstransport.spcthickness defaults to a bare scalar NaN
+    # (pyissm/model/classes/masstransport.py:62), not a properly-shaped per-vertex array --
+    # never caught before because ismasstransport was never actually enabled until this step.
+    # NaN still means "no constraint" per that class's own convention; just needs the right
+    # shape.
+    md.masstransport.spcthickness = np.full(md.mesh.numberofvertices, np.nan)
+
+    # TODO: no real SMB dataset is wired into this pipeline anywhere yet (ais_0.1_param.py
+    # never sets md.smb.mass_balance) -- issmb was never actually enabled until this step, so
+    # this gap was never caught before. Zero SMB is a defensible placeholder for THIS short
+    # (20yr) diagnostic relaxation, whose purpose is damping initialisation shock in the
+    # dynamics/geometry, not simulating real mass-balance evolution -- but a later stage that
+    # needs actual climate forcing (e.g. historical_dhdt_tuning) must not inherit this as-is;
+    # see pyissm/model/classes/smb.py's own "not specified -- set to 0" fallback (never fires
+    # before this step's own consistency check runs, hence set explicitly here).
+    md.smb.mass_balance = np.zeros(md.mesh.numberofvertices)
+
+    # Same NaN-default gap as smb.mass_balance above, this time in basalforcings (also never
+    # exercised before ismasstransport was first enabled here): groundedice_melting_rate and
+    # floatingice_melting_rate both default to scalar NaN
+    # (pyissm/model/classes/basalforcings.py:50-51), causing a marshalling-time crash
+    # ("FetchDataToInput ... not found in binary file") rather than the Python-level
+    # consistency error the other gaps hit. Zero basal melt is the standard placeholder absent
+    # real ocean-forcing data (see melt_gamma_tuning stage below for where that eventually
+    # belongs) and matches this class's own "not specified -- set to 0" fallback intent.
+    md.basalforcings.groundedice_melting_rate = np.zeros(md.mesh.numberofvertices)
+    md.basalforcings.floatingice_melting_rate = np.zeros(md.mesh.numberofvertices)
+
     # Short relaxation window -- TODO: tune final_time / time_step for your domain.
     md.timestepping.start_time = 0
     md.timestepping.final_time = 20    # years
@@ -1369,11 +1640,26 @@ if 'ssa_relaxation' in steps:
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_relaxed'
     md.cluster = cluster
-    md.settings.waitonlock = 0
+    # BUGFIX: same pattern found and fixed in ssa_inverted_solve -- waitonlock=0 disables the
+    # blocking wait, but the "if save" branch below calls solve() with load_only=True, which
+    # never submits (pyissm/model/execute.py:1078-1082 unconditional early return); it only
+    # loads results from an already-finished prior run. The correct load_only=False call
+    # already exists in the "else" branch below, just gated behind save=False -- since save is
+    # True globally in this script, that branch was unreachable and this step has likely never
+    # actually completed. Fixed to the single-call synchronous pattern used in
+    # ssa_inverted_solve: load_only=False submits, waitonlock>0 blocks internally polling for
+    # the lock file, then auto-loads in the same call. 24h budget for a 400-timestep transient
+    # (20yr / 0.05yr step) -- generous given a single forward solve took ~3-5min.
+    md.settings.waitonlock = 1440  # minutes
+    # Also missing from this step (present in every other step in this pipeline, including the
+    # now-fixed ssa_inverted_solve): the tighter default 1e-6 residue threshold caused a
+    # marginal-failure crash there ("Recovery solver failed") on the very first linear solve;
+    # a 400-timestep transient has far more exposure to that same marginal-residual failure.
+    md.settings.solver_residue_threshold = 1e-3
 
     if save:
-        print(f"-- Loading transient solution...")
-        md = pyissm.model.execute.solve(md, 'Transient', load_only = True, runtime_name = False)
+        print(f"-- Submitting and waiting on transient relaxation...")
+        md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
 
         if diagnostics:
             dH = md.results.TransientSolution.Thickness[-1] - md.geometry.thickness
@@ -1408,92 +1694,234 @@ if 'ssa_relaxation' in steps:
 ## ==================================================================================
 
 ## ------------------------------------
-## Stage 1: Higher-order (MOLHO) thermal steady state
+## Stage 1: Higher-order (HO) velocity + single-shot thermal solve
 ## ------------------------------------
-# Couples stress balance + thermal (+ melting + enthalpy) to convergence on an extruded
-# mesh, replacing ais_0.1_param.py's surface-temperature-as-proxy rheology_B with a real
-# depth-resolved one. MOLHO chosen over full HO/FS: it's the standard cost-effective
-# higher-order approximation for this purpose and (unlike HO/FS) doesn't require the mesh
-# to be pre-extruded for the stress-balance part itself -- pyissm/model/param.py's 2D-mesh
-# guard only fires for HO/FS. The thermal/enthalpy part is inherently 3D regardless, so
-# the mesh is extruded here either way.
+# Solves HO velocity once (frozen), then a single non-coupled thermal solve against that
+# frozen field -- replacing ais_0.1_param.py's surface-temperature-as-proxy rheology_B
+# with a real depth-resolved one. Originally attempted as MOLHO + a coupled
+# SteadystateSolution Picard loop (velocity<->thermal iterated to convergence); MOLHO's
+# reduced basal+shear velocity representation and the coupled loop's slow/unstable
+# convergence on fast, warm-bedded basins (see PIG/Thwaites small-region test) both proved
+# unworkable. Switched to full HO (matches Felicity's actual validated Thermal step,
+# runme.m:772-836) and the decoupled solve-once structure instead. See the isenthalpy=0
+# comment below for the other major deviation from the original plan.
 if 'ho_thermal_steadystate' in steps:
 
     print("-------------------------------------------------------------")
-    print(f" HIGHER-ORDER (MOLHO) THERMAL STEADY STATE"                   )
+    print(f" HIGHER-ORDER (HO) VELOCITY + SINGLE-SHOT THERMAL SOLVE"      )
     print("-------------------------------------------------------------")
 
     print(f"-- Loading inverted model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_inverted.nc')
 
-    print(f"-- Extruding mesh (15 layers)...")
-    # TODO (verify at implementation/test time, see plan verification section): confirm
-    # MOLHO solves cleanly on an extruded mesh -- the param.py 2D-mesh guard only blocks
-    # HO/FS, not MOLHO, meaning MOLHO is DESIGNED to skip extrusion for stress-balance-only
-    # solves. Whether it behaves correctly when thermal coupling forces extrusion anyway is
-    # the one real unknown in this stage; test on a small region (e.g. the PIG/Thwaites or
-    # Siple Coast bounding boxes already used for diagnostics this session) before running
-    # continent-wide.
-    md = md.extrude(num_layers = 15, extrusion_exponent = 1.3)
+    # BUGFIX (found via the PIG/Thwaites small-region test): initialization.waterfraction
+    # and .watercolumn both default to a bare scalar NaN (pyissm/model/classes/
+    # initialization.py:85,89) -- same NaN-default-doesn't-survive-an-operation pattern hit
+    # repeatedly earlier in this pipeline (masstransport.spcthickness,
+    # basalforcings.*_melting_rate). Model.extrude() calls mesh._project_3d() on these
+    # fields to replicate them across layers (initialization.py:142-143), but a bare scalar
+    # can't be broadcast correctly there -- it comes out still shape (1,) instead of
+    # (numberofvertices3d,), tripping the post-extrude consistency check. Zero (no
+    # subglacial water) is the standard placeholder absent real hydrology forcing, same
+    # status as the SMB/melt placeholders in ssa_relaxation.
+    md.initialization.waterfraction = np.zeros(md.mesh.numberofvertices)
+    md.initialization.watercolumn = np.zeros(md.mesh.numberofvertices)
 
-    print(f"-- Setting flow equation to MOLHO...")
-    md = pyissm.model.param.set_flow_equation(md, MOLHO = 'all')
-    md = pyissm.model.bc.set_molho_bc(md)
-
-    print(f"-- Configuring thermal solve...")
-    md.thermal.isenthalpy = 1  # temperate-ice handling near the bed, standard at this scale
-    md.thermal.maxiter = 100
-    md.thermal.reltol = 0.01
+    # BUGFIX (found via the PIG/Thwaites small-region test): same NaN-default gap as
+    # ssa_relaxation hit -- basalforcings.{groundedice,floatingice}_melting_rate default to
+    # bare scalar NaN and were never exercised on this model before (AIS3_inverted.nc only
+    # ever went through a Stressbalance solve). This is a marshalling-time crash
+    # ("FetchDataToInput ... not found in binary file"), not caught by the Python
+    # consistency check, so it only surfaces once the job actually submits. Zero basal melt
+    # is the same placeholder used in ssa_relaxation, pending melt_gamma_tuning.
+    md.basalforcings.groundedice_melting_rate = np.zeros(md.mesh.numberofvertices)
+    md.basalforcings.floatingice_melting_rate = np.zeros(md.mesh.numberofvertices)
 
     print('-- Removing icebergs from ice levelset...')
     md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
 
+    print(f"-- Extruding mesh (15 layers)...")
+    md = md.extrude(num_layers = 15, extrusion_exponent = 1.3)
+
+    print(f"-- Setting flow equation to HO...")
+    # SWITCHED from MOLHO to full HO -- matches Felicity's actual validated Thermal step
+    # (runme.m:800, `setflowequation(md, 'HO', 'all')`) exactly. The PIG/Thwaites
+    # small-region test found MOLHO's reduced basal+shear velocity representation,
+    # reconstructed into a full 3D field to drive thermal advection, produced an
+    # oscillating/ill-conditioned thermal solve regardless of mesh resolution,
+    # stabilization scheme, or residue threshold; full HO (independent velocity DOF at
+    # every layer, no reconstruction needed) converged far more cleanly. No MOLHO-specific
+    # BC split (set_molho_bc) needed for plain HO.
+    md = pyissm.model.param.set_flow_equation(md, HO = 'all')
+
+    print(f"-- Priming a depth-varying initial temperature profile...")
+    # ROOT CAUSE found via the PIG/Thwaites small-region test: initialization._extrude()
+    # calls mesh._project_3d(..., type='node') with the default layer=0, which REPLICATES
+    # the 2D surface air temperature identically at every one of the 15 vertical layers
+    # (pyissm/model/mesh.py:2607-2609, layer==0 branch). Real ice columns warm
+    # substantially toward the bed (geothermal flux + strain heating), often approaching
+    # pressure melting -- starting every layer at cold surface temperature forces the
+    # nonlinear solver to build the entire vertical thermal structure from a flat,
+    # far-from-equilibrium guess. Priming a linear profile from surface temp (top) to
+    # just-below-pressure-melting (bed) is standard ice-sheet thermal-spinup practice.
+    _bed3d = np.asarray(md.geometry.bed).ravel()
+    _surf3d = np.asarray(md.geometry.surface).ravel()
+    _z3d = np.asarray(md.mesh.z).ravel()
+    _thickness3d = np.maximum(_surf3d - _bed3d, 1.0)
+    _depth_frac = np.clip((_surf3d - _z3d) / _thickness3d, 0.0, 1.0)  # 0 at surface, 1 at bed
+    _pressure = md.materials.rho_ice * md.constants.g * np.maximum(_surf3d - _z3d, 0.0)
+    _Tpmp = md.materials.meltingpoint - md.materials.beta * _pressure
+    _basal_target = np.minimum(_Tpmp, 273.15) - 1.0
+    _surf_temp3d = np.asarray(md.initialization.temperature).ravel()
+    md.initialization.temperature = _surf_temp3d + _depth_frac * (_basal_target - _surf_temp3d)
+    md.initialization.temperature = np.clip(md.initialization.temperature, 220.0, 273.15)
+
+    # Felicity's stabilization trick (runme.m:823-824): pin non-ice vertices to a fixed
+    # temperature -- non-ice extruded columns are geometrically degenerate (near-zero real
+    # ice thickness there), so their thermal equation is ill-posed without a Dirichlet
+    # constraint. CONFIRMED NECESSARY empirically: removing it let the solve finish
+    # "cleanly" but produced min temperature -8,399,632 K. Also initializing temperature
+    # at those same nodes to match the pin target, so the constraint starts consistent
+    # with the initial guess rather than jumping to it (the mismatch was the likely cause
+    # of an early large first-solve residual in testing).
+    _non_ice = np.asarray(md.mask.ice_levelset).ravel() > 0
+    _temp = np.asarray(md.initialization.temperature).ravel().copy()
+    _temp[_non_ice] = 250.0
+    md.initialization.temperature = _temp
+
+    md.timestepping.time_step = 0
+    md.inversion.iscontrol = 0
+    md.verbose.solution = 1
+
     print(f"-- Assigning cluster and updating settings...")
-    md.miscellaneous.name = 'AIS3_thermal_steadystate'
-    md.cluster = cluster
-    md.settings.waitonlock = 0
+    # BUGFIX: the shared `cluster` object (190GB/normal queue) is correctly tuned for
+    # this pipeline's 2D SSA problems, but the full-continental run crashed here with
+    # Exit Status 137 (SIGKILL, OOM) at 180.8GB used / 190GB requested -- a 15-layer
+    # extruded HO mesh (~23.8M 3D nodes, full independent velocity DOF per layer, unlike
+    # MOLHO's reduced basal+shear representation) needs far more memory than the 2D
+    # problems this cluster config was tuned for. Using a local override (hugemem queue,
+    # ~2900GB/node) rather than changing the shared object other steps rely on.
+    md.cluster = pyissm.model.classes.cluster.gadi()
+    md.cluster.codepath = cluster.codepath
+    md.cluster.executionpath = cluster.executionpath
+    md.cluster.storage = cluster.storage
+    md.cluster.moduleuse = cluster.moduleuse
+    md.cluster.moduleload = cluster.moduleload
+    md.cluster.login = cluster.login
+    md.cluster.project = cluster.project
+    md.cluster.queue = 'hugemem'
+    md.cluster.np = 48
+    # BUGFIX: 2900GB exceeded hugemem's actual per-node cap -- PBS rejected the qsub
+    # outright ("requested more memory per node (2.83TB) than the nodes in queue hugemem
+    # can provide"), and pyissm's solve() didn't surface that failure, so the launcher sat
+    # forever "waiting for lock file" on a job that was never created. Confirmed via direct
+    # qsub testing that 1470-1500GB is accepted; using 1450GB for headroom below whatever
+    # the exact ceiling is.
+    md.cluster.memory = 1450
+    md.cluster.time = 60 * 48
+    md.settings.solver_residue_threshold = 1e-3
+
+    # Step 1: solve HO velocity ONCE, then freeze it -- mirrors Felicity's structure
+    # exactly (solve HO, save, load, solve thermal against the frozen field), NOT a
+    # coupled SteadystateSolution Picard loop. The coupled loop was tried first and made
+    # every attempt converge extremely slowly (strong two-way velocity<->temperature
+    # feedback on fast, warm-bedded basins) before failing outright; the decoupled
+    # structure sidesteps that feedback entirely. maxiter=100 (not Felicity's maxiter=5)
+    # after testing showed 5 was too rough for our SSA-inverted friction field's known
+    # residual noise -- an under-converged velocity here destabilized the thermal solve.
+    print(f"-- Solving HO stress balance (frozen velocity for the thermal solve)...")
+    md.stressbalance.maxiter = 100
+    md.miscellaneous.name = 'AIS3_thermal_steadystate_velocity'
+    md.settings.waitonlock = 1440  # minutes
+    md = pyissm.model.execute.solve(md, 'stressbalance', load_only = False, runtime_name = False)
+
+    if diagnostics:
+        vel_check = np.asarray(md.results.StressbalanceSolution.Vel).ravel()
+        print(f"   velocity solve done; max Vel = {np.nanmax(vel_check):.1f} m/yr")
+
+    md.initialization.vx = md.results.StressbalanceSolution.Vx
+    md.initialization.vy = md.results.StressbalanceSolution.Vy
+    md.initialization.vz = md.results.StressbalanceSolution.Vz
+    md.initialization.vel = md.results.StressbalanceSolution.Vel
+    md.initialization.pressure = md.results.StressbalanceSolution.Pressure
+
+    # Step 2: single (non-coupled) thermal solve against that frozen velocity field.
+    print(f"-- Configuring and solving single (non-coupled) thermal solve...")
+    # isenthalpy=0, NOT Felicity's isenthalpy=1: every attempt with the enthalpy (phase-
+    # change) formulation failed -- residue either diverged outright or oscillated after
+    # nearly clearing the threshold (0.10 vs 0.1), across every combination of mesh
+    # resolution, HO vs MOLHO, stabilization scheme, residue threshold, and penalty_lock
+    # tried. The plain temperature formulation converged cleanly on the first attempt
+    # after switching. Known caveat: without enthalpy, temperature isn't capped at the
+    # pressure-melting point -- ~2% of nodes came out slightly above it in testing (up to
+    # +5.5K), fixed by the post-solve clip below rather than by the (much stiffer)
+    # phase-change formulation.
+    md.thermal.isenthalpy = 0
+    md.thermal.maxiter = 100
+    md.thermal.reltol = 0.05
+    md.miscellaneous.name = 'AIS3_thermal_steadystate_thermal'
+    md.settings.waitonlock = 1440  # minutes
+    md = pyissm.model.execute.solve(md, 'thermal', load_only = False, runtime_name = False)
+
+    # Post-solve cleanup, found necessary via the full continental run's own diagnostics
+    # (not caught by the PIG/Thwaites small-region test): 7.2% of 2D columns came back
+    # with catastrophically wrong temperature (<200K, many far below 0K), but 99.87% of
+    # those (114,659 of 114,802) are NON-ICE columns -- the ones meant to be held at 250K
+    # by the spctemperature pin. ISSM's spc constraints are penalty-based, not exact
+    # elimination; the penalty evidently doesn't dominate strongly enough for a large
+    # fraction of the ~114K scattered non-ice inclusions (rock outcrops, nunataks) spread
+    # across the full continent, even though it held reliably for the much smaller/more
+    # homogeneous non-ice population within the single PIG/Thwaites drainage basin. Since
+    # non-ice temperature is scientifically meaningless anyway (no real ice column
+    # exists there), forcibly overwriting it in Python is more robust than relying on the
+    # solver's constraint to hold. Only 143 genuine ICE-covered columns (140 grounded, 3
+    # floating -- 0.009% of the domain) were actually bad; velocity there is unremarkable
+    # (mean 111.8 m/yr, below the 159.3 m/yr average for good grounded columns), ruling
+    # out the fast-flow-instability mechanism suspected from PIG/Thwaites for this
+    # residual population -- a floor clip is a defensible patch at this tiny scale.
+    # Floor set to 200K, not 220K: diagnostics on the actual run showed nodes<200K
+    # (1,606,647) and nodes<100K (1,605,850) are almost the same count (~800 apart) -- the
+    # bad population is overwhelmingly catastrophic (deep negative, not gently cold), so a
+    # 220K floor was needlessly warming genuine extreme-cold locations too. Real Antarctic
+    # interior annual-mean temperatures (Dome A ~214.7K, Vostok ~217.9K) sit comfortably
+    # above 200K, so this floor bounds true garbage without touching legitimate extremes.
+    _T = np.asarray(md.results.ThermalSolution.Temperature).ravel()
+    _non_ice_final = np.asarray(md.mask.ice_levelset).ravel() > 0
+    _T[_non_ice_final] = 250.0
+    _T = np.clip(_T, 200.0, 273.15)
+    md.initialization.temperature = _T
+
+    if diagnostics:
+        T = md.initialization.temperature
+        print(f"\nTHERMAL STEADY-STATE DIAGNOSTICS:")
+        print(f"   Min temperature: {np.nanmin(T):.2f} K")
+        print(f"   Max temperature: {np.nanmax(T):.2f} K")
+        print(f"   Mean temperature: {np.nanmean(T):.2f} K")
+
+    print(f"-- Recomputing rheology_B from the depth-resolved temperature...")
+    md.materials.rheology_B = pyissm.tools.materials.cuffey(md.initialization.temperature)
 
     if save:
-        print(f"-- Loading steady-state solution...")
-        md = pyissm.model.execute.solve(md, 'SteadystateSolution', load_only = True, runtime_name = False)
-
-        if diagnostics:
-            T = md.results.SteadystateSolution.Temperature
-            print(f"\nTHERMAL STEADY-STATE DIAGNOSTICS:")
-            print(f"   Min temperature: {np.nanmin(T):.2f} K")
-            print(f"   Max temperature: {np.nanmax(T):.2f} K")
-            # Sanity range: should stay within [220, 273.15] K -- outside that indicates a
-            # non-physical result (too cold: bad BC/units; at/above 273.15 K widely: the
-            # enthalpy formulation should be handling temperate ice, not raw temperature
-            # exceeding the pressure-melting point).
-
-        print(f"-- Recomputing rheology_B from the depth-resolved temperature...")
-        md.materials.rheology_B = pyissm.tools.materials.cuffey(md.initialization.temperature)
-
         print(f"\nSaving thermal steady-state model to {model_dir}/AIS3_thermal_steadystate.nc")
         pyissm.model.io.save_model(md, f'{model_dir}/AIS3_thermal_steadystate.nc')
-
-    else:
-        print(f"-- Submitting steady-state solve...")
-        md = pyissm.model.execute.solve(md, 'SteadystateSolution', load_only = False, runtime_name = False)
 
 
 ## ------------------------------------
 ## Stage 2 (SCAFFOLD): Higher-order friction re-inversion
 ## ------------------------------------
-# SSA-tuned friction (from ssa_friction_inv_reg_lcurve) isn't physically valid once MOLHO
+# SSA-tuned friction (from ssa_friction_inv_reg_lcurve) isn't physically valid once HO
 # adds vertical-shear resistance to the force balance -- the friction coefficient has to
 # absorb a different share of the driving stress. Warm-start from the SSA-inverted C
 # (same warm-start pattern validated for every mesh/geometry change this session) rather
 # than cold-starting from C_init, and reuse the existing sensitivity-sweep infrastructure,
 # which is confirmed to just call a generic Stressbalance solve (respects whatever flow
-# equation is already set on md, not SSA-hardcoded) -- but this combination (MOLHO +
+# equation is already set on md, not SSA-hardcoded) -- but this combination (HO +
 # m1qn3 inversion via parameter_sensitivity) has not been tested. Verify on the same small
 # test region as stage 1 before trusting continent-wide.
 if 'ho_friction_inv' in steps:
 
     print("-------------------------------------------------------------")
-    print(f" HIGHER-ORDER (MOLHO) FRICTION RE-INVERSION"                  )
+    print(f" HIGHER-ORDER (HO) FRICTION RE-INVERSION"                  )
     print("-------------------------------------------------------------")
 
     print(f"-- Loading thermal steady-state model...")
@@ -1530,21 +1958,53 @@ if 'ho_friction_inv' in steps:
 
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_ho_friction_inv'
-    md.cluster = cluster
-    md.settings.waitonlock = 0
+    # BUGFIX: same submission-never-happens pattern found and fixed in ssa_inverted_solve,
+    # ssa_relaxation, and ho_thermal_steadystate -- waitonlock=0 + load_only=True in the
+    # "if save" branch never submits (pyissm/model/execute.py:1078-1082 unconditional
+    # early return), it only loads results from an already-finished prior run. Fixed to
+    # the same synchronous submit-and-wait pattern used everywhere else in this pipeline.
+    # Also applying the hugemem fix proactively (found necessary for ho_thermal_steadystate's
+    # plain HO stress balance solve at this same 23.8M-node scale, which OOM-killed at
+    # 190GB/normal-queue) -- an m1qn3 inversion adds adjoint/gradient computation on top of
+    # the forward solve, so it will need at least as much memory, likely more.
+    md.cluster = pyissm.model.classes.cluster.gadi()
+    md.cluster.codepath = cluster.codepath
+    md.cluster.executionpath = cluster.executionpath
+    md.cluster.storage = cluster.storage
+    md.cluster.moduleuse = cluster.moduleuse
+    md.cluster.moduleload = cluster.moduleload
+    md.cluster.login = cluster.login
+    md.cluster.project = cluster.project
+    md.cluster.queue = 'hugemem'
+    md.cluster.np = 48
+    md.cluster.memory = 1450  # confirmed accepted (1470-1500GB range) for ho_thermal_steadystate
+    md.cluster.time = 60 * 48
+    md.settings.waitonlock = 1440  # minutes
 
     print(f"-- Setting-up cost function coefficients/masks...")
     # Start from the validated SSA values (cf101=10/cf103=100, grounded+observed mask,
     # grounding-line-excluded 501 mask) -- same physical misfit/regularisation this project
-    # has used throughout, just re-evaluated under MOLHO's own velocity field. cf501 is kept
-    # at the SSA-chosen 0.0001 as a starting point; MOLHO's different force balance could
+    # has used throughout, just re-evaluated under HO's own velocity field. cf501 is kept
+    # at the SSA-chosen 0.0001 as a starting point; HO's different force balance could
     # shift the misfit-vs-regularisation tradeoff, so treat this as a prior, not a final
     # value -- worth a small re-sweep (mirroring ssa_friction_inv_reg_lcurve's methodology)
     # once this converges once and a baseline RMSE is in hand.
+    # BUGFIX (found via the PIG/Thwaites small-region test): cost functions 101/103 are
+    # 'SurfaceAbsVelMisfit'/'SurfaceLogVelMisfit' (pyissm/model/inversions.py:13-14) --
+    # velocity misfit against satellite-observed SURFACE speed, evaluated at surface
+    # vertices in a 3D model, not basal ones. This scaffold reused on_base (correct for
+    # the friction control's own bounds, since friction is a basal parameter) for the
+    # cost-function weighting mask too, which put nonzero coefficients at vertices where
+    # the misfit is never evaluated -- confirmed by the test showing contributions of
+    # exactly 0 for both 101 and 103 in the printed cost table (m1qn3 was optimizing pure
+    # regularisation smoothness, never actually fitting observed velocity at all). The 501
+    # regularisation term (DragCoefficientAbsGradient) genuinely is a basal-quantity
+    # gradient, so its mask correctly stays on_base.
+    on_surface = np.asarray(md.mesh.vertexonsurface).astype(bool).ravel()
     vo = np.asarray(md.inversion.vel_obs).ravel()
     ol = np.asarray(md.mask.ocean_levelset).ravel()
     il = np.asarray(md.mask.ice_levelset).ravel()
-    mask = (vo > 0) & (ol >= 0) & on_base
+    mask = (vo > 0) & (ol >= 0) & on_surface
     grounded_mask = (ol >= 0) & on_base
     _elx = np.asarray(md.mesh.elements).astype(int) - 1
     _float_v = ol < 0
@@ -1567,8 +2027,8 @@ if 'ho_friction_inv' in steps:
     md.settings.solver_residue_threshold = 1e-3
 
     if save:
-        print(f"-- Loading MOLHO friction inversion result...")
-        md = pyissm.model.execute.solve(md, 'Stressbalance', load_only = True, runtime_name = False)
+        print(f"-- Submitting and waiting on HO friction inversion...")
+        md = pyissm.model.execute.solve(md, 'Stressbalance', load_only = False, runtime_name = False)
 
         if diagnostics:
             vel = md.results.StressbalanceSolution.Vel
@@ -1579,7 +2039,7 @@ if 'ho_friction_inv' in steps:
         print(f"\nSaving to {model_dir}/AIS3_ho_friction_inv.nc")
         pyissm.model.io.save_model(md, f'{model_dir}/AIS3_ho_friction_inv.nc')
     else:
-        print(f"-- Submitting MOLHO friction inversion...")
+        print(f"-- Submitting HO friction inversion...")
         md = pyissm.model.execute.solve(md, 'Stressbalance', load_only = False, runtime_name = False)
 
 
@@ -1611,7 +2071,7 @@ if 'melt_gamma_tuning' in steps:
                     'coeff_gamma0_DeltaT_quadratic_local_median.nc')
     TIME_SENTINEL = 1e9  # ISSM timeseries convention for a constant (non-time-varying) field
 
-    print(f"-- Loading MOLHO friction-inverted model...")
+    print(f"-- Loading HO friction-inverted model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_friction_inv.nc')
 
     print(f"-- Configuring ISMIP6 basal melt parameterisation...")
@@ -1748,7 +2208,7 @@ if 'melt_gamma_tuning' in steps:
 # Same transient structure as ssa_relaxation above (deactivate_all then re-enable
 # isstressbalance/ismasstransport/issmb/isgroundingline), but loading the stage 2/3
 # output and with final_time set to ~1 year -- per the user's stated intent, this is
-# meant only to damp diagnostic-to-prognostic shock after the MOLHO re-inversion +
+# meant only to damp diagnostic-to-prognostic shock after the HO re-inversion +
 # melt-parameter change, NOT to do the historical spin-up itself (that's stage 5). Kept
 # as a separate step from ssa_relaxation rather than overwriting it, so the working SSA
 # baseline (AIS3_relaxed.nc) stays available for comparison.

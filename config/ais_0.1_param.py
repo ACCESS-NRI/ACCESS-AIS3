@@ -172,7 +172,23 @@ print(f"\nDEFINING INITIAL FRICTION")
 # power law (no ceiling; a forward check showed it clears the Coulomb residual ~30x and converges
 # robustly at every coefficient, at the cost of the Iken bound). The main script (ais_0.1.py)
 # auto-detects the law from the saved friction class, so only this flag needs changing.
-friction_law = 'budd'  # 'schoof' or 'budd'
+#
+# Set to 'schoof' as of 2026-08-18: m1qn3 control inversion of FrictionC was stuck at zero net
+# movement (omode=6, stopped on dxmin) in every earlier attempt despite a structurally correct
+# gradient -- root-caused to stressbalance.restol=0.01 being too loose, letting the nonlinear
+# forward solve settle into different Newton states for identical C (evaluating the same
+# warm-start C twice gave costs differing by ~93%), which corrupted the cost/gradient signal
+# m1qn3's line search relies on. Fixed with restol=0.001: FrictionC now moves across 93% of
+# grounded vertices, cost dropped 76%, grounded RMSE improved 188.6->94.2 (Cmax=2.0; see
+# AIS3_ssa_friction_inv_reg_lcurve/schoof_m1qn3_tightrestol_cmax2.0/). NOTE this RMSE is still
+# worse than Budd's validated 60.4, this Cmax=2.0 step is not the eventual target (0.8-0.85, see
+# friction.Cmax below), and the run stopped on its iteration budget (omode=5), not full
+# convergence -- pushing toward the real target Cmax hit repeated new failure modes (nonlinear
+# solver non-convergence, then a separate dxmin stall from an over-conservative dfmin_frac) that
+# are still open. docs/inversion_worklog.md 5.3-5.4 also documents that Schoof does not fix the
+# known Siple Coast trunk deficit either. Chosen anyway per explicit direction to proceed with
+# Schoof over Budd for this pipeline run.
+friction_law = 'schoof'  # 'schoof' or 'budd'
 
 if friction_law == 'schoof':
     md.friction = pyissm.model.classes.friction.schoof()
