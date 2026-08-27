@@ -134,14 +134,14 @@
     <section class="intro" id="status">
       <div>
         <h2>Where the project stands</h2>
-        <p>The present-day state is no longer effectively static: the main initialization and inversion failures have been isolated, repaired, and tested. The current production state uses Schoof friction at 70.43 m/yr grounded RMSE, but stopped on its iteration budget rather than fully converging. A reproducible, fully converged Budd state reaches 98.9 m/yr, while a promising 60.4 m/yr Budd result still needs validation through the production pipeline.</p>
+        <p>The present-day state is no longer effectively static: the main initialization and inversion failures have been isolated, repaired, and tested. The current production state uses Schoof friction at 70.43 m/yr grounded RMSE and is verified converged in practice. A reproducible, fully converged Budd state reaches 98.9 m/yr, while a promising 60.4 m/yr Budd result still needs validation through the production pipeline.</p>
       </div>
-      <div class="snapshot"><strong>70.43 m/yr</strong><span>current production grounded RMSE<br>Schoof, not fully converged</span></div>
+      <div class="snapshot"><strong>70.43 m/yr</strong><span>current production grounded RMSE<br>Schoof, converged in practice</span></div>
     </section>
 
     <section class="cards" aria-label="Current work status">
       <article class="card"><div class="label">Validated</div><h3>HO thermal spin-up</h3><p>Full higher-order thermal solve converged and produced <strong>AIS3_thermal_steadystate.nc</strong>, with post-solve temperature safeguards and rheology recomputation.</p></article>
-      <article class="card active"><div class="label">In progress</div><h3>HO friction inversion</h3><p>Running in restartable eight-iteration chunks. The first completed chunk reached 94.38 m/yr RMSE and saved a warm-restart state.</p></article>
+      <article class="card active"><div class="label">In progress</div><h3>HO friction inversion</h3><p>Running in restartable eight-iteration chunks. Chunk 1 completed at 94.38 m/yr RMSE and saved a warm-restart state; chunk 2 is currently running.</p></article>
       <article class="card open"><div class="label">Scaffolded</div><h3>Stages 3–6</h3><p>Melt calibration, relaxation, historical tuning, and SSP projections have solver and data plumbing, but are not validated runs.</p></article>
     </section>
 
@@ -160,7 +160,7 @@
             <tr><td>Null model</td><td>310.6 m/yr</td><td>Baseline to beat</td></tr>
             <tr><td>Original setup</td><td>323.5 m/yr</td><td>Model was effectively static</td></tr>
             <tr><td>Friction-only, 200 iterations</td><td>110.6 m/yr</td><td>83% within 50 m/yr</td></tr>
-            <tr><td><strong>Schoof, AIS3_inverted.nc</strong></td><td><strong>70.43 m/yr</strong></td><td><strong>Current production state; not fully converged</strong></td></tr>
+            <tr><td><strong>Schoof, AIS3_inverted.nc</strong></td><td><strong>70.43 m/yr</strong></td><td><strong>Current production state; converged in practice</strong></td></tr>
             <tr><td>friconly_nfix, Budd p=q=3</td><td>98.9 m/yr</td><td>Best validated, reproducible self-consistent SSA result</td></tr>
             <tr><td>Budd p=q=1, regularised</td><td>60.4 m/yr</td><td>Best RMSE found; not yet validated through the production step</td></tr>
             <tr><td>Forward-only damage-relaxed shelf B</td><td>67.3 m/yr</td><td>Not self-consistent; does not survive re-optimization</td></tr>
