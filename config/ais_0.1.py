@@ -8,6 +8,8 @@ import geopandas as gpd
 import pandas as pd
 import xarray as xr
 import os
+import glob
+from pathlib import Path
 
 
 def friction_law_info(md):
@@ -166,6 +168,7 @@ all_steps = [
     'melt_gamma_tuning',
     'ho_relaxation',
     'historical_dhdt_tuning',
+    'projection_ssp',
 ]
 
 # Define steps to run
@@ -183,7 +186,7 @@ all_steps = [
 # steps = ['param']
 # steps = ['ssa_inverted_solve']
 # steps = ['ssa_relaxation']
-steps = ['ho_thermal_steadystate']
+steps = ['ho_friction_inv']
 # steps = ['ssa_friction_inv_lcurve']
 # steps = ['ssa_friction_inv_sensit']
 
@@ -1924,8 +1927,24 @@ if 'ho_friction_inv' in steps:
     print(f" HIGHER-ORDER (HO) FRICTION RE-INVERSION"                  )
     print("-------------------------------------------------------------")
 
-    print(f"-- Loading thermal steady-state model...")
-    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_thermal_steadystate.nc')
+    # Chunked warm-restart: the first full-continental attempt (96 cores/24h) made real
+    # progress -- m1qn3 cost dropped 3.01e7 -> 3.21e6 (89%) over 12 iterations -- but was
+    # killed by NCI's walltime cap mid-iteration-13 with NO checkpoint saved (solve() only
+    # writes results after the mpiexec process returns normally; ISSM's m1qn3 loop has no
+    # built-in mid-run checkpoint). All 12 iterations of progress were lost. Fix: cap each
+    # job's iteration budget well within the 24h wall clock (~2h/iteration observed, so
+    # maxsteps=8 -> ~16h with ~8h margin) and have each run resume from its own prior
+    # partial output if one exists, so repeated 24h submissions accumulate progress instead
+    # of re-doing it. Cost: m1qn3's internal quasi-Newton curvature estimate is NOT
+    # preserved across restarts (ISSM has no mechanism to serialize it), so each chunk
+    # starts a fresh approximation -- a real but unavoidable overhead of this workaround.
+    resume_path = f'{model_dir}/AIS3_ho_friction_inv.nc'
+    if os.path.exists(resume_path):
+        print(f"-- Resuming from partial HO friction inversion ({resume_path})...")
+        md = pyissm.model.io.load_model(resume_path)
+    else:
+        print(f"-- Loading thermal steady-state model (no partial inversion found -- fresh start)...")
+        md = pyissm.model.io.load_model(f'{model_dir}/AIS3_thermal_steadystate.nc')
 
     # Warm start is ALREADY carried through, not a separate step: AIS3_inverted.nc has the
     # correctly SSA-solved FrictionCoefficient, ho_thermal_steadystate extrudes it, and
@@ -1952,8 +1971,13 @@ if 'ho_friction_inv' in steps:
     md.inversion.control_parameters = [fric_control]
     md.inversion.min_parameters = np.where(on_base, fric_min, _fld)
     md.inversion.max_parameters = np.where(on_base, fric_max, _fld)
-    md.inversion.maxsteps = 500
-    md.inversion.maxiter = 500
+    # Per-chunk budget, not the full convergence target -- see the resume/checkpoint note
+    # above. 8 iterations x ~2h/iteration (observed) ~= 16h, leaving ~8h margin within the
+    # 24h wall-clock cap before PBS kills the job. gttol is still the real target: if a
+    # chunk reaches it before exhausting maxsteps, m1qn3 stops early and that's the
+    # converged answer; otherwise the next submission resumes and keeps going.
+    md.inversion.maxsteps = 8
+    md.inversion.maxiter = 8
     md.inversion.gttol = friction_inv_gttol
 
     print(f"-- Assigning cluster and updating settings...")
@@ -1976,9 +2000,19 @@ if 'ho_friction_inv' in steps:
     md.cluster.login = cluster.login
     md.cluster.project = cluster.project
     md.cluster.queue = 'hugemem'
-    md.cluster.np = 48
-    md.cluster.memory = 1450  # confirmed accepted (1470-1500GB range) for ho_thermal_steadystate
-    md.cluster.time = 60 * 48
+    # Scaled up from the single-node 48-core config validated for ho_thermal_steadystate,
+    # since the m1qn3 inversion's first iteration alone (forward + adjoint solve on the
+    # full ~23.8M-node HO mesh) took >2.6h at 48 cores. 96 cores (2 hugemem nodes), not
+    # 192 -- NCI enforces a project-level walltime cap that shrinks sharply with core
+    # count on hugemem (confirmed via direct qsub testing): 48/96 cores -> 24-48h allowed,
+    # but 144+ cores drops to just 5h, nowhere near enough for a multi-iteration m1qn3
+    # run. 96 cores keeps a full 24h budget while still doubling the parallelism of the
+    # validated single-node config. Memory scaled to 2x (2 nodes) for the same reason
+    # 4x was needed at 192 -- Gadi enforces a PER-NODE cap on hugemem, and a flat -l mem=X
+    # on a multi-node request divides across nodes.
+    md.cluster.np = 96
+    md.cluster.memory = 1450 * 2
+    md.cluster.time = 60 * 24
     md.settings.waitonlock = 1440  # minutes
 
     print(f"-- Setting-up cost function coefficients/masks...")
@@ -2031,10 +2065,13 @@ if 'ho_friction_inv' in steps:
         md = pyissm.model.execute.solve(md, 'Stressbalance', load_only = False, runtime_name = False)
 
         if diagnostics:
-            vel = md.results.StressbalanceSolution.Vel
-            gr = (il < 0) & (ol > 0) & on_base
+            vel = np.asarray(md.results.StressbalanceSolution.Vel).ravel()
+            # Surface-vs-surface, matching the cost function's own evaluation location and
+            # the validated PIG/Thwaites methodology (base-vs-surface differs slightly due
+            # to real HO vertical shear, confirmed via verify_rmse_data.py this session).
+            gr = (il < 0) & (ol > 0) & on_surface
             print(f"\nHO FRICTION INVERSION DIAGNOSTICS:")
-            print(f"   Grounded (base-layer) RMSE: {np.sqrt(np.nanmean((vel[gr]-vo[gr])**2)):.2f} m/yr")
+            print(f"   Grounded (surface) RMSE: {np.sqrt(np.nanmean((vel[gr]-vo[gr])**2)):.2f} m/yr")
 
         print(f"\nSaving to {model_dir}/AIS3_ho_friction_inv.nc")
         pyissm.model.io.save_model(md, f'{model_dir}/AIS3_ho_friction_inv.nc')
@@ -2358,3 +2395,135 @@ if 'historical_dhdt_tuning' in steps:
     else:
         print(f"-- Submitting historical transient run...")
         md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
+
+
+## ------------------------------------
+## Stage 6 (SCAFFOLD): Future projections under scenario forcing
+## ------------------------------------
+# What comes after historical tuning in this field: forced transient runs under future
+# ocean/atmosphere forcing, to produce Antarctica's projected sea-level contribution.
+# Data survey (confirmed present on disk): /g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/
+# has two forcing GCMs -- CESM2-WACCM and MRI-ESM2-0 -- each with historical/ctrl plus
+# ssp126/ssp245(CESM2-WACCM only)/ssp370/ssp534-over/ssp585 branches, real ocean thermal
+# forcing (ocean/tf/v3/tf_AIS_{gcm}_{scenario}_ocean_v3_{y0}-{y1}.nc, chunked in ~10-year
+# files) and multiple candidate SMB parameterisations per scenario (SDBN1-2000m,
+# SDBN1-8000m, dEBM2-8000m, GEMB-SDBN1-2000m, GEMB-SDBN1-8000m, fracture --
+# .../acabf/v2/acabf_AIS_{gcm}_{scenario}_{param}_v2_{year}.nc, chunked per-year). The
+# "2300" in the path is real: ISMIP7's long-term-commitment protocol extends forcing to
+# year 2300, not just the ISMIP6-era 2100 -- END_YEAR below defaults to 2100 (the more
+# standard/comparable target) but the data supports running further; TODO decide which
+# per what this pipeline is actually feeding (ISMIP7 submission vs internal ACCESS use).
+if 'projection_ssp' in steps:
+
+    print("-------------------------------------------------------------")
+    print(f" FUTURE PROJECTION (SCENARIO-FORCED TRANSIENT)"               )
+    print("-------------------------------------------------------------")
+
+    FORCING_ROOT = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS'
+    START_YEAR = 2019   # matches historical_dhdt_tuning's endpoint -- continuity, not a restart
+    END_YEAR = 2100      # TODO: confirm against whichever protocol this feeds (2100 vs 2300)
+    # TODO: pick the SMB parameterisation deliberately rather than defaulting silently --
+    # SDBN1-8000m is the coarsest/cheapest and used here only as a scaffold placeholder.
+    SMB_PARAM = 'SDBN1-8000m'
+    # TODO: for a real ISMIP-style projection this should be the full GCM x SSP matrix
+    # (both GCMs, all available scenarios), each producing an independent run/output --
+    # scaffolded here as one representative pair to establish the mechanics first.
+    RUN_MATRIX = [
+        {'gcm': 'CESM2-WACCM', 'scenario': 'ssp585'},
+        {'gcm': 'CESM2-WACCM', 'scenario': 'ssp126'},
+    ]
+
+    def _load_decadal_tf(gcm, scenario, start_year, end_year):
+        """Concatenate ISMIP7's ~10-year-chunked ocean thermal-forcing files covering
+        [start_year, end_year] into one (time, z, y, x) DataArray. TODO: verify chunk
+        boundaries exactly straddle start_year/end_year (files are pre-cut on fixed decade
+        boundaries, e.g. 2025-2034, not aligned to an arbitrary START_YEAR) -- may need to
+        pull one extra chunk on either side and trim, rather than assuming exact coverage."""
+        tf_dir = f'{FORCING_ROOT}/{gcm}/{scenario}/ocean/tf/v3'
+        files = sorted(glob.glob(f'{tf_dir}/tf_AIS_{gcm}_{scenario}_ocean_v3_*.nc'))
+        wanted = []
+        for f in files:
+            y0, y1 = (int(v) for v in Path(f).stem.split('_')[-1].split('-'))
+            if y1 >= start_year and y0 <= end_year:
+                wanted.append(f)
+        if not wanted:
+            raise FileNotFoundError(f"no tf chunks found for {gcm}/{scenario} in {tf_dir}")
+        return xr.open_mfdataset(sorted(wanted), combine = 'by_coords')['tf']
+
+    def _load_annual_smb(gcm, scenario, smb_param, start_year, end_year):
+        """Concatenate ISMIP7's per-year acabf (SMB flux) files. TODO: confirm units/sign
+        convention (kg m-2 s-1 vs already-annualised) against the file's own attrs at run
+        time -- do not assume it matches the RACMO smbgl convention used in stage 5."""
+        smb_dir = f'{FORCING_ROOT}/{gcm}/{scenario}/{smb_param}/acabf/v2'
+        files = []
+        for yr in range(start_year, end_year + 1):
+            matches = glob.glob(f'{smb_dir}/acabf_AIS_{gcm}_{scenario}_{smb_param}_v2_{yr}.nc')
+            if matches:
+                files.append(matches[0])
+        if not files:
+            raise FileNotFoundError(f"no acabf files found for {gcm}/{scenario}/{smb_param} in {smb_dir}")
+        return xr.open_mfdataset(sorted(files), combine = 'by_coords')['acabf']
+
+    for run in RUN_MATRIX:
+        gcm, scenario = run['gcm'], run['scenario']
+        run_name = f"AIS3_projection_{gcm}_{scenario}"
+        print(f"\n-- Run: {gcm} / {scenario} ({START_YEAR}-{END_YEAR}) --")
+
+        print(f"   Loading historical end-state as initial condition...")
+        md = pyissm.model.io.load_model(f'{model_dir}/AIS3_historical_1995_2019.nc')
+
+        print(f"   Loading {gcm}/{scenario} ocean thermal forcing and SMB (real ISMIP7 files)...")
+        tf_da = _load_decadal_tf(gcm, scenario, START_YEAR, END_YEAR)
+        smb_da = _load_annual_smb(gcm, scenario, SMB_PARAM, START_YEAR, END_YEAR)
+        # TODO: interpolate tf_da/smb_da onto the mesh x/y (and, for tf, depth) exactly as
+        # melt_gamma_tuning does for the static Zhou climatology and historical_dhdt_tuning
+        # does for RACMO SMB, but now preserving the TIME dimension (build one (nv+1, nt)
+        # md.smb.mass_balance-style array and one time-indexed md.basalforcings.tf list per
+        # ISSM's timeseries convention) rather than a single time-collapsed field -- this is
+        # the main new plumbing this stage needs beyond stages 3/5's machinery.
+
+        md.inversion.iscontrol = 0
+        md.verbose.solution = 1
+
+        md.transient = pyissm.model.classes.transient.deactivate_all(md.transient)
+        md.transient.isstressbalance = 1
+        md.transient.ismasstransport = 1
+        md.transient.issmb = 1
+        md.transient.isthermal = 0   # TODO: revisit once stages 1/2 (HO thermal/friction) are fully validated
+        md.transient.isgroundingline = 1
+        md.groundingline.migration = 'SubelementMigration'
+        md.transient.requested_outputs = [
+            'default', 'Vel', 'Thickness', 'Surface', 'Base', 'MaskOceanLevelset',
+            'IceVolume', 'IceVolumeAboveFloatation',
+        ]
+
+        md.timestepping.start_time = START_YEAR
+        md.timestepping.final_time = END_YEAR
+        md.timestepping.time_step = 0.1   # years -- matches stage 5's historical run
+
+        print(f"   Assigning cluster and updating settings...")
+        md.miscellaneous.name = run_name
+        md.cluster = cluster
+        md.settings.waitonlock = 0
+
+        if save:
+            print(f"   Loading projection transient solution...")
+            md = pyissm.model.execute.solve(md, 'Transient', load_only = True, runtime_name = False)
+
+            print(f"   Computing sea-level-equivalent (SLE) contribution time series...")
+            # Standard VAF -> SLE conversion: SLE_mm = (VAF_0 - VAF_t) * rho_ice/rho_seawater
+            # / A_ocean * 1000. A_ocean = 3.625e14 m^2 is the standard ISMIP6/7 constant
+            # ocean surface area -- TODO confirm this pipeline should use that exact
+            # constant rather than a project-specific one if this feeds an ISMIP7 submission.
+            vaf_ts = np.array([np.sum(np.asarray(t.IceVolumeAboveFloatation))
+                                for t in md.results.TransientSolution])
+            rho_sw = 1023.0  # kg/m^3, standard seawater density (not currently in md.materials)
+            A_OCEAN = 3.625e14  # m^2, standard ISMIP6/7 constant
+            sle_mm = (vaf_ts[0] - vaf_ts) * md.materials.rho_ice / rho_sw / A_OCEAN * 1000.0
+            print(f"   {gcm}/{scenario}: cumulative SLE contribution by {END_YEAR} = {sle_mm[-1]:.2f} mm")
+
+            print(f"   Saving to {model_dir}/{run_name}.nc")
+            pyissm.model.io.save_model(md, f'{model_dir}/{run_name}.nc')
+        else:
+            print(f"   Submitting projection run...")
+            md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
