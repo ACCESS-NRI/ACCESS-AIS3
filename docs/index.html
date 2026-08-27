@@ -134,9 +134,9 @@
     <section class="intro" id="status">
       <div>
         <h2>Where the project stands</h2>
-        <p>The present-day state is no longer effectively static: the main initialization and inversion failures have been isolated, repaired, and tested. The best current self-consistent candidate is still above the original target of 50 m/yr grounded RMSE, so the configuration remains under active development.</p>
+        <p>The present-day state is no longer effectively static: the main initialization and inversion failures have been isolated, repaired, and tested. The current production state uses Schoof friction at 70.43 m/yr grounded RMSE, but stopped on its iteration budget rather than fully converging. A reproducible, fully converged Budd state reaches 98.9 m/yr, while a promising 60.4 m/yr Budd result still needs validation through the production pipeline.</p>
       </div>
-      <div class="snapshot"><strong>98.9 m/yr</strong><span>best converged grounded RMSE<br>friconly_nfix, 192 iterations</span></div>
+      <div class="snapshot"><strong>70.43 m/yr</strong><span>current production grounded RMSE<br>Schoof, not fully converged</span></div>
     </section>
 
     <section class="cards" aria-label="Current work status">
@@ -160,7 +160,9 @@
             <tr><td>Null model</td><td>310.6 m/yr</td><td>Baseline to beat</td></tr>
             <tr><td>Original setup</td><td>323.5 m/yr</td><td>Model was effectively static</td></tr>
             <tr><td>Friction-only, 200 iterations</td><td>110.6 m/yr</td><td>83% within 50 m/yr</td></tr>
-            <tr><td><strong>friconly_nfix</strong></td><td><strong>98.9 m/yr</strong></td><td><strong>Best self-consistent production candidate</strong></td></tr>
+            <tr><td><strong>Schoof, AIS3_inverted.nc</strong></td><td><strong>70.43 m/yr</strong></td><td><strong>Current production state; not fully converged</strong></td></tr>
+            <tr><td>friconly_nfix, Budd p=q=3</td><td>98.9 m/yr</td><td>Best validated, reproducible self-consistent SSA result</td></tr>
+            <tr><td>Budd p=q=1, regularised</td><td>60.4 m/yr</td><td>Best RMSE found; not yet validated through the production step</td></tr>
             <tr><td>Forward-only damage-relaxed shelf B</td><td>67.3 m/yr</td><td>Not self-consistent; does not survive re-optimization</td></tr>
           </tbody>
         </table>

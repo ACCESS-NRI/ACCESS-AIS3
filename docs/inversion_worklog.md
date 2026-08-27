@@ -15,13 +15,36 @@ inversion plus a friction inversion, grounded B from temperature).
 | original setup | 323.5 | — | **worse than null** — model was effectively static |
 | joint friction + B, 70 iters | 171.2 | — | 70 % of grounded within ±50 |
 | friction-only, 200 iters (`friconly_fz`) | 110.6 | — | 83 % within ±50; median residual −0.1 |
-| **`friconly_nfix`, 192 iters (dxmin), corrected 100 m floor** | **98.9** | 252.5 | **best converged, self-consistent state — current production candidate** |
-| forward-only: `C(nfix)` + damage-relaxed shelf B | 67.3 | 172.8 | **not an inverted state — see §5.2, does not survive re-optimisation** |
+| `friconly_nfix`, 192 iters (dxmin), corrected 100 m floor, Budd p=q=3 | 98.9 | 252.5 | best converged Budd p=q=3 result — **superseded, see below** |
+| forward-only: `C(nfix)` + damage-relaxed shelf B | 67.3 | 172.8 | not an inverted state — see §5.2, does not survive re-optimisation |
+| Schoof, tight `restol`, Cmax sweep (`schoof_tightrestol`) | 94.44 | 230.29 | exploratory, superseded by the row below |
+| **Schoof, `AIS3_inverted.nc` — CURRENT PRODUCTION** | **70.43** | 115.82 | `friction_law='schoof'` in `ais_0.1_param.py`, `C_init=5000`, `Cmax=0.85`. **Not fully converged** — own code comment: "stopped on its iteration budget (omode=5), not full convergence... still open." Chosen per explicit direction to proceed with Schoof for this pipeline run, despite §5.4's Siple Coast finding. **This is the state the entire HO pipeline (`post_inversion_pipeline_worklog.md`) is warm-started from.** |
+| Budd p=q=1, unregularised | 61.4 | — | beats p=q=3 by ~38%; needed `friction_inv_gttol` tightened to `1e-8` (default `1e-4` false-converges by iter ~16 under p=1's gentler gradient landscape) |
+| **Budd p=q=1, cf501=0.0001 regularised** | **60.4** | — | **best RMSE found anywhere in this project.** C-field roughness also improves (0.82→0.18, matching p=3's own 0.17) — smoother *and* more accurate, not a tradeoff. **Never run through the actual production `ssa_friction_inv_reg_lcurve` step** — validated only via an ad-hoc scratchpad script (`p1q1_reg_sweep2.py`); its raw execution output exists (`execution_p1q1_reg_sweep2/`) but was never finalised into a saved `.nc`, and `friction_law` in `ais_0.1_param.py` is still set to `'schoof'`, not `'budd'`. |
 
-`friconly_nfix` supersedes `friconly_fz`: same method, corrected thickness-floor geometry
-(§4, floored into the base rather than rebuilding the surface). It is the current best
-converged, self-consistent (C and B mutually optimal) result and the candidate for
-production promotion.
+**Reconciliation note (added after the fact — this table and §5.4/§6/§7 below were written
+before both developments in the last two rows above, and are kept as the historical record of
+that phase of work, not a currently-accurate production status):**
+
+- §5.4 concluded Schoof was "closed, not to revisit" based on a Weertman-match warm start
+  that went unstable near the Coulomb cap. The `AIS3_inverted.nc` Schoof run above used a
+  **different strategy** (direct `C_init=5000` from a forward-solve sweep, not a Weertman
+  warm start) and got much further (RMSE 70.43 vs. the old attempts' 872–10,200+), but is
+  explicitly **not fully converged** and does not itself demonstrate the Siple Coast trunk
+  deficit (§5.3/§5.4's core finding) is resolved — that question is still open, just with a
+  materially better partial result than what §5.4 tested.
+- §6 states "Budd `p=q=3`... Correct as-is, unchanged" as production. **This is no longer
+  true**: production (`ais_0.1_param.py`) currently runs Schoof, and separately, Budd
+  **p=q=1** (not p=q=3) is the actual best-performing configuration found (60.4), sitting
+  in `ais_0.1_param.py`'s own code comments as "now the validated production configuration"
+  — a claim the code's active `friction_law='schoof'` setting contradicts.
+- Net state as of this note: **the best validated, reproducible SSA result is `friconly_nfix`
+  at 98.9** (fully converged, saved, self-consistent). **The best RMSE found anywhere is
+  60.4** (p=q=1 Budd, regularised) but it has never been reproduced through the actual
+  production pipeline step. **The state actually in production and feeding the HO pipeline
+  is Schoof at 70.43**, explicitly acknowledged as unconverged. Promoting p=q=1 to
+  production (running it for real through `ssa_friction_inv_reg_lcurve`, not the ad-hoc
+  script) is the natural next step but has not been done — see §7 item 9.
 
 Residual structure at 110.6 (fz; the last run this breakdown was computed for):
 
@@ -407,11 +430,19 @@ against the C_init=10 dead-zone bug, §2.1, and never re-validated after the fix
 
 The `maxsteps=30` cap and its cited OOM history were consequences of the under-provisioned
 cluster memory, not of a large step budget being inherently unsafe — fixing `cluster.memory`
-addresses the actual cause. Schoof's bounds (`friction_law_info`) were left as-is with a note
-explaining why: ruled out on physics grounds, §5.4.
+addresses the actual cause.
 
-Correct as-is, unchanged: thickness floor 10 m into the base; `N_floor_frac = 0.07`;
-Budd `p=q=3`; `coupling = 3`.
+**Superseded by later work (see §1's reconciliation note): this section describes the
+state at the time it was written, not current production.** As of the current
+`ais_0.1_param.py`, `friction_law = 'schoof'` is active (`C_init=5000`, `Cmax=0.85`,
+explicitly not fully converged, RMSE 70.43 in `AIS3_inverted.nc`) — chosen "per explicit
+direction to proceed with Schoof over Budd for this pipeline run," not because §5.4's
+Siple Coast finding was overturned. The `'budd'` branch of the same file now carries
+`p=q=1` (not `p=q=3`), with its own comment calling it "now the validated production
+configuration" (RMSE 60.4) — but that branch is not the one currently active, and that
+result has never been run through this section's `ssa_friction_inv_reg_lcurve` production
+step for real (see §1). Thickness floor (10 m into the base), `N_floor_frac = 0.07`, and
+`coupling = 3` are still correct as described.
 
 **Not promoted — deliberately different from `friconly_nfix`:** the production pipeline still
 builds its own shelf B via its own L-curve step (`rheology_lcurve_run`, cf502) rather than
@@ -456,6 +487,18 @@ result against the ~98.9 grounded RMSE benchmark, not copy nfix's numbers direct
    grounded/near-grounding-line effective pressure instead of the numerical N floor; a
    physically-based (not numerically-motivated) N field near flotation specifically at this
    location, informed by till/hydrology data if available.
+9. **Reconcile production friction law** (added post-hoc, see §1's reconciliation note and
+   §6). Three inconsistent states currently coexist: (a) `friconly_nfix` (Budd p=q=3, 98.9)
+   — fully converged and validated, this worklog's original reference result; (b) Schoof via
+   `AIS3_inverted.nc` (70.43) — currently active in `ais_0.1_param.py`, chosen per explicit
+   direction, explicitly not fully converged, and warm-starting the entire downstream HO
+   pipeline (`post_inversion_pipeline_worklog.md`); (c) Budd p=q=1 regularised (60.4) — the
+   best RMSE found anywhere, but only ever run via an ad-hoc scratchpad script, never through
+   the real `ssa_friction_inv_reg_lcurve` production step, and not the active `friction_law`.
+   Next step: actually run `ssa_friction_inv_reg_lcurve` with `friction_law='budd'`/p=q=1 to
+   validate (b)'s 60.4 number through production, not just the scratchpad script — then
+   decide whether to re-found the HO pipeline on it (currently continuing on Schoof/70.43 per
+   explicit direction, revisit later, not blocking).
 
 **Closed, not to revisit:**
 
@@ -463,12 +506,18 @@ result against the ~98.9 grounded RMSE benchmark, not copy nfix's numbers direct
   11 independent attempts, 11 failures, all ending worse than their own iteration 1 (§5.2).
   The shelf-only B chain (§5.1) is the method that works; its output feeds forward into
   production as a fixed field, not as a further coupled-domain control.
-- Schoof (regularised Coulomb) friction for Siple Coast (§5.4). Ruled out on physics, not
-  just numerics: a forward-only Cmax sweep across the full documented range (0.17–0.84)
-  left the Siple Coast trunk ratio completely unchanged (0.39–0.41 vs Budd's 0.40), and
-  adjoint-based inversion of Schoof's `C` is unstable near the Coulomb cap regardless of
-  solver settings (Newton vs Picard, iteration cap, control bounds, or scoping the free
-  region to Siple Coast alone).
+- Schoof (regularised Coulomb) friction **as a fix for the Siple Coast trunk deficit**
+  (§5.4). Ruled out on physics, not just numerics: a forward-only Cmax sweep across the
+  full documented range (0.17–0.84) left the Siple Coast trunk ratio completely unchanged
+  (0.39–0.41 vs Budd's 0.40), and adjoint-based inversion of Schoof's `C` is unstable near
+  the Coulomb cap regardless of solver settings (Newton vs Picard, iteration cap, control
+  bounds, or scoping the free region to Siple Coast alone) **when warm-started from the
+  Weertman-limit match to Budd's converged `C`**. This finding still stands — it's about
+  physics (Siple Coast) and about that specific warm-start strategy, not about Schoof in
+  general. **Not closed as a friction law overall**: a later attempt using a fresh
+  `C_init=5000` (not the Weertman match) got substantially further (RMSE 70.43, see §1) —
+  reopened for general production use per explicit direction, still not fully converged,
+  see §7 item 9.
 - Raising the friction `C` upper bound to fix the pinned-vertex transient runaway (§5.5).
   Disproved directly: warm-started from `nfix`'s own converged C with the bound doubled to
   20, 100% of the previously-pinned vertices settled back at ~10 anyway. Not a bound problem;
