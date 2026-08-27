@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ACCESS-AIS3 development record, workflow, inversion results, and pipeline status.">
+  <title>ACCESS-AIS3 | Development record</title>
+  <style>
+    :root {
+      --ink: #17232b;
+      --muted: #5d6b70;
+      --paper: #f4f1e9;
+      --white: #fffdf8;
+      --line: #d6d8ca;
+      --teal: #147d78;
+      --teal-dark: #0b5757;
+      --coral: #d6634f;
+      --gold: #d9a441;
+      --shadow: 0 14px 34px rgba(23, 35, 43, .10);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.65 Georgia, "Times New Roman", serif;
+    }
+    body::before {
+      content: "";
+      display: block;
+      height: 8px;
+      background: var(--coral);
+    }
+    a { color: var(--teal-dark); }
+    .wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+    header {
+      padding: 78px 0 64px;
+      background: var(--teal-dark);
+      color: var(--white);
+      position: relative;
+      overflow: hidden;
+    }
+    header::after {
+      content: "";
+      position: absolute;
+      width: 420px;
+      height: 420px;
+      right: -130px;
+      top: -170px;
+      border: 70px solid rgba(217, 164, 65, .22);
+      border-radius: 50%;
+    }
+    .eyebrow {
+      color: #f4c66a;
+      font: 700 .78rem/1.2 "Trebuchet MS", sans-serif;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { font-family: "Trebuchet MS", "Gill Sans", sans-serif; line-height: 1.1; margin: 0; }
+    h1 { max-width: 760px; margin-top: 18px; font-size: clamp(2.7rem, 7vw, 5.8rem); letter-spacing: -.04em; }
+    .lede { max-width: 680px; margin: 25px 0 0; color: #d6ece8; font-size: 1.18rem; }
+    .header-links { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 32px; font: 700 .9rem "Trebuchet MS", sans-serif; }
+    .header-links a { color: #fff; }
+    main { padding: 58px 0 90px; }
+    .intro { display: grid; grid-template-columns: 1.4fr .8fr; gap: 48px; align-items: end; margin-bottom: 44px; }
+    .intro h2 { font-size: clamp(1.8rem, 3vw, 2.7rem); }
+    .intro p { color: var(--muted); margin: 14px 0 0; }
+    .snapshot { border-left: 4px solid var(--coral); padding: 5px 0 5px 20px; }
+    .snapshot strong { display: block; color: var(--coral); font: 700 2.8rem/1 "Trebuchet MS", sans-serif; }
+    .snapshot span { color: var(--muted); font-size: .94rem; }
+    .section { padding-top: 36px; margin-top: 36px; border-top: 1px solid var(--line); }
+    .section > h2 { font-size: 1.8rem; margin-bottom: 24px; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .card { background: var(--white); border: 1px solid var(--line); border-top: 5px solid var(--teal); padding: 22px; box-shadow: var(--shadow); }
+    .card.active { border-top-color: var(--gold); }
+    .card.open { border-top-color: var(--coral); }
+    .label { color: var(--muted); font: 700 .72rem "Trebuchet MS", sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+    .card h3 { margin: 9px 0 8px; font-size: 1.22rem; }
+    .card p { color: var(--muted); margin: 0; font-size: .96rem; }
+    .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .metric { background: var(--ink); color: var(--white); padding: 22px; min-height: 138px; }
+    .metric:nth-child(2) { background: var(--coral); }
+    .metric:nth-child(3) { background: var(--gold); color: var(--ink); }
+    .metric:nth-child(4) { background: var(--teal); }
+    .metric strong { display: block; font: 700 2.4rem/1.05 "Trebuchet MS", sans-serif; }
+    .metric span { display: block; margin-top: 12px; font-size: .91rem; }
+    .table-wrap { overflow-x: auto; background: var(--white); border: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; min-width: 620px; }
+    th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--line); }
+    th { background: #e6e9dc; color: var(--teal-dark); font: 700 .78rem "Trebuchet MS", sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    td strong { color: var(--teal-dark); }
+    .timeline { display: grid; gap: 0; }
+    .step { display: grid; grid-template-columns: 58px 1fr; gap: 18px; padding: 0 0 26px; }
+    .step-no { width: 42px; height: 42px; display: grid; place-items: center; background: var(--teal); color: white; font: 700 1rem "Trebuchet MS", sans-serif; }
+    .step h3 { margin: 2px 0 6px; font-size: 1.14rem; }
+    .step p { color: var(--muted); margin: 0; }
+    .links { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .link { padding: 17px 20px; background: var(--white); border-left: 4px solid var(--coral); }
+    .link a { font: 700 1rem "Trebuchet MS", sans-serif; }
+    .link span { display: block; color: var(--muted); font-size: .9rem; margin-top: 4px; }
+    footer { padding: 26px 0 42px; color: var(--muted); font-size: .9rem; border-top: 1px solid var(--line); }
+    @media (max-width: 760px) {
+      .wrap { width: min(100% - 28px, 640px); }
+      header { padding: 54px 0 48px; }
+      .intro, .cards, .links { grid-template-columns: 1fr; gap: 18px; }
+      .metric-grid { grid-template-columns: 1fr 1fr; }
+      .metric { min-height: 120px; padding: 17px; }
+      .metric strong { font-size: 1.75rem; }
+      main { padding-top: 38px; }
+    }
+    @media (max-width: 430px) {
+      .metric-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="eyebrow">ACCESS-NRI / ACCESS-AIS3</div>
+      <h1>Development record for a whole-Antarctic ice-sheet model.</h1>
+      <p class="lede">A working record of the ISSM configuration, the present-day inversion, the debugging that made it trustworthy, and the pipeline still being brought online.</p>
+      <nav class="header-links" aria-label="Page navigation">
+        <a href="#status">Status</a>
+        <a href="#evidence">Evidence</a>
+        <a href="#pipeline">Pipeline</a>
+        <a href="#worklogs">Worklogs</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="intro" id="status">
+      <div>
+        <h2>Where the project stands</h2>
+        <p>The present-day state is no longer effectively static: the main initialization and inversion failures have been isolated, repaired, and tested. The best current self-consistent candidate is still above the original target of 50 m/yr grounded RMSE, so the configuration remains under active development.</p>
+      </div>
+      <div class="snapshot"><strong>98.9 m/yr</strong><span>best converged grounded RMSE<br>friconly_nfix, 192 iterations</span></div>
+    </section>
+
+    <section class="cards" aria-label="Current work status">
+      <article class="card"><div class="label">Validated</div><h3>HO thermal spin-up</h3><p>Full higher-order thermal solve converged and produced <strong>AIS3_thermal_steadystate.nc</strong>, with post-solve temperature safeguards and rheology recomputation.</p></article>
+      <article class="card active"><div class="label">In progress</div><h3>HO friction inversion</h3><p>Running in restartable eight-iteration chunks. The first completed chunk reached 94.38 m/yr RMSE and saved a warm-restart state.</p></article>
+      <article class="card open"><div class="label">Scaffolded</div><h3>Stages 3–6</h3><p>Melt calibration, relaxation, historical tuning, and SSP projections have solver and data plumbing, but are not validated runs.</p></article>
+    </section>
+
+    <section class="section" id="evidence">
+      <h2>Results worth carrying forward</h2>
+      <div class="metric-grid">
+        <div class="metric"><strong>9.01%</strong><span>of grounded vertices carry 90.6% of total squared error</span></div>
+        <div class="metric"><strong>17×</strong><span>real spatial viscosity range restored from RACMO temperature</span></div>
+        <div class="metric"><strong>25 / 25</strong><span>Budd sensitivity runs converged cleanly after the boundary-condition fix</span></div>
+        <div class="metric"><strong>1450–1500 GB</strong><span>empirical per-node hugemem ceiling on the target system</span></div>
+      </div>
+      <div class="table-wrap" style="margin-top: 22px">
+        <table>
+          <thead><tr><th>Configuration</th><th>Grounded RMSE</th><th>What it means</th></tr></thead>
+          <tbody>
+            <tr><td>Null model</td><td>310.6 m/yr</td><td>Baseline to beat</td></tr>
+            <tr><td>Original setup</td><td>323.5 m/yr</td><td>Model was effectively static</td></tr>
+            <tr><td>Friction-only, 200 iterations</td><td>110.6 m/yr</td><td>83% within 50 m/yr</td></tr>
+            <tr><td><strong>friconly_nfix</strong></td><td><strong>98.9 m/yr</strong></td><td><strong>Best self-consistent production candidate</strong></td></tr>
+            <tr><td>Forward-only damage-relaxed shelf B</td><td>67.3 m/yr</td><td>Not self-consistent; does not survive re-optimization</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>What changed the diagnosis</h2>
+      <div class="timeline">
+        <div class="step"><div class="step-no">01</div><div><h3>Friction left its dead zone</h3><p>The Budd initial coefficient was moved from 100 to 1.8, where the inversion has useful sensitivity. The former results were discarded because the model was not moving.</p></div></div>
+        <div class="step"><div class="step-no">02</div><div><h3>Rheology became spatially physical</h3><p>Uniform placeholder B was replaced with a RACMO surface-temperature-derived field. The temperature remains a proxy for depth-averaged rheology, but it restores the missing spatial variation.</p></div></div>
+        <div class="step"><div class="step-no">03</div><div><h3>Grounding-line drag and front BCs were repaired</h3><p>The drag mask is vertex-based, and the floating calving front is cleared back to Neumann conditions after extraction. This avoids stripping drag from grounded ice and avoids an artificial velocity clamp at the front.</p></div></div>
+        <div class="step"><div class="step-no">04</div><div><h3>The mountains exposed a geometry error</h3><p>Experiment scripts rebuilt the surface after applying a thickness floor, fabricating steep slopes and driving stress. Production now preserves the observed surface and absorbs the floor into the base.</p></div></div>
+      </div>
+    </section>
+
+    <section class="section" id="pipeline">
+      <h2>Pipeline map</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Stage</th><th>Step name</th><th>Status</th><th>Output</th></tr></thead>
+          <tbody>
+            <tr><td>1. Thermal spin-up</td><td><code>ho_thermal_steadystate</code></td><td>Validated</td><td><code>AIS3_thermal_steadystate.nc</code></td></tr>
+            <tr><td>2. HO friction inversion</td><td><code>ho_friction_inv</code></td><td>In progress</td><td><code>AIS3_ho_friction_inv.nc</code></td></tr>
+            <tr><td>3. Melt calibration</td><td><code>melt_gamma_tuning</code></td><td>Scaffold</td><td><code>AIS3_melt_gamma_tuning.nc</code></td></tr>
+            <tr><td>4. Relaxation</td><td><code>ho_relaxation</code></td><td>Scaffold</td><td><code>AIS3_ho_relaxed.nc</code></td></tr>
+            <tr><td>5. Historical tuning</td><td><code>historical_dhdt_tuning</code></td><td>Scaffold</td><td><code>AIS3_historical_1995_2019.nc</code></td></tr>
+            <tr><td>6. Future projections</td><td><code>projection_ssp</code></td><td>Scaffold</td><td><code>AIS3_projection_{gcm}_{scenario}.nc</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="color: var(--muted); margin-top: 16px">Scaffolded stages intentionally retain explicit TODOs for unresolved science choices. Their intermediate outputs must not be treated as validated results.</p>
+    </section>
+
+    <section class="section" id="worklogs">
+      <h2>Read the source record</h2>
+      <div class="links">
+        <div class="link"><a href="inversion_worklog.md">Inversion worklog</a><span>Diagnostics, repairs, benchmarks, dead ends, regional failures, and the current candidate.</span></div>
+        <div class="link"><a href="post_inversion_pipeline_worklog.md">Post-inversion pipeline</a><span>Thermal spin-up, restart strategy, resource limits, and the six-stage pipeline status.</span></div>
+        <div class="link"><a href="../RUN_GUIDE.md">Run guide</a><span>Boundary-condition choices and the extraction workflow used by production runs.</span></div>
+        <div class="link"><a href="../scratch_github_issue.md">Active investigation notes</a><span>Budd versus Schoof, effective pressure sources, and current friction experiments.</span></div>
+      </div>
+    </section>
+  </main>
+
+  <footer><div class="wrap">ACCESS-AIS3 is an open community configuration for the ACCESS climate model suite and ISSM. This page summarizes repository worklogs; the linked records remain authoritative.</div></footer>
+</body>
+</html>
