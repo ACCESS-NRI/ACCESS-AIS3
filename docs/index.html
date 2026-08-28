@@ -100,11 +100,21 @@
     .link { padding: 17px 20px; background: var(--white); border-left: 4px solid var(--coral); }
     .link a { font: 700 1rem "Trebuchet MS", sans-serif; }
     .link span { display: block; color: var(--muted); font-size: .9rem; margin-top: 4px; }
+    .figures { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+    figure { margin: 0; background: var(--white); border: 1px solid var(--line); box-shadow: var(--shadow); }
+    figure.wide { grid-column: 1 / -1; }
+    figure img { display: block; width: 100%; height: 260px; object-fit: cover; object-position: top; background: #fff; }
+    figure.wide img { height: auto; max-height: 620px; object-fit: contain; }
+    figcaption { padding: 16px 18px 18px; color: var(--muted); font-size: .93rem; }
+    figcaption strong { display: block; color: var(--ink); font: 700 1rem "Trebuchet MS", sans-serif; margin-bottom: 5px; }
+    figcaption a { display: inline-block; margin-top: 8px; font: 700 .82rem "Trebuchet MS", sans-serif; }
     footer { padding: 26px 0 42px; color: var(--muted); font-size: .9rem; border-top: 1px solid var(--line); }
     @media (max-width: 760px) {
       .wrap { width: min(100% - 28px, 640px); }
       header { padding: 54px 0 48px; }
       .intro, .cards, .links { grid-template-columns: 1fr; gap: 18px; }
+      .figures { grid-template-columns: 1fr; }
+      figure.wide { grid-column: auto; }
       .metric-grid { grid-template-columns: 1fr 1fr; }
       .metric { min-height: 120px; padding: 17px; }
       .metric strong { font-size: 1.75rem; }
@@ -195,6 +205,32 @@
         </table>
       </div>
       <p style="color: var(--muted); margin-top: 16px">Scaffolded stages intentionally retain explicit TODOs for unresolved science choices. Their intermediate outputs must not be treated as validated results.</p>
+    </section>
+
+    <section class="section" id="figures">
+      <h2>Selected figures</h2>
+      <div class="figures">
+        <figure class="wide">
+          <a href="../models/best_result_regional_zooms.png"><img src="../models/best_result_regional_zooms.png" alt="Observed velocity, modelled velocity, and residual maps for PIG/Thwaites, Siple Coast, and Totten"></a>
+          <figcaption><strong>Best regional inversion benchmark</strong> Budd p=q=1 with regularisation reaches 60.4 m/yr domain grounded RMSE in this benchmark. It is the best RMSE found, but has not yet been reproduced through the production inversion step. <a href="../models/best_result_regional_zooms.png">Open full resolution</a></figcaption>
+        </figure>
+        <figure>
+          <a href="../models/ais3_thermal_steadystate_diagnostics.png"><img src="../models/ais3_thermal_steadystate_diagnostics.png" alt="Antarctic basal temperature, surface temperature, vertical temperature gradient, basal speed, and temperature distribution"></a>
+          <figcaption><strong>Validated HO thermal steady state</strong> Continental temperature structure, basal speed, and temperature distribution from <code>AIS3_thermal_steadystate.nc</code>. <a href="../models/ais3_thermal_steadystate_diagnostics.png">Open full resolution</a></figcaption>
+        </figure>
+        <figure>
+          <a href="../models/ais3_ho_friction_inv_pigthwaites_diagnostics.png"><img src="../models/ais3_ho_friction_inv_pigthwaites_diagnostics.png" alt="Observed and modelled surface speed, residual, and inverted basal friction over the PIG and Thwaites subdomain"></a>
+          <figcaption><strong>HO friction inversion validation</strong> Observed versus modelled surface speed, residual, and inverted basal Schoof friction for the PIG/Thwaites test domain. <a href="../models/ais3_ho_friction_inv_pigthwaites_diagnostics.png">Open full resolution</a></figcaption>
+        </figure>
+        <figure>
+          <a href="../models/newB_rheology_overview.png"><img src="../models/newB_rheology_overview.png" alt="Inverted floating-ice rheology B, modelled velocity, observed velocity, and residual across Antarctica"></a>
+          <figcaption><strong>Floating-ice rheology inversion</strong> Corrected temperature-dependent shelf rheology B alongside modelled and observed velocity and the residual field. The plotted state reports 56.1 m/yr RMSE. <a href="../models/newB_rheology_overview.png">Open full resolution</a></figcaption>
+        </figure>
+        <figure>
+          <a href="../models/best_result_p1q1_reg0001.png"><img src="../models/best_result_p1q1_reg0001.png" alt="Observed and modelled Antarctic velocity, grounded residual, and inverted friction coefficient for the Budd p equals q equals 1 benchmark"></a>
+          <figcaption><strong>SSA friction inversion benchmark</strong> Budd p=q=1 with light regularisation, showing observed and modelled velocity, grounded residual, and friction coefficient C. This benchmark reaches 60.4 m/yr grounded RMSE but still needs production-step validation. <a href="../models/best_result_p1q1_reg0001.png">Open full resolution</a></figcaption>
+        </figure>
+      </div>
     </section>
 
     <section class="section" id="worklogs">
