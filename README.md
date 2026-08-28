@@ -10,7 +10,7 @@ Open community whole-Antarctic configuration for the Ice-sheet and Sea-level Sys
 We welcome any feedback and ideas! Let us know by submitting [issues on GitHub](https://github.com/ACCESS-NRI/ACCESS-AIS3/issues) or [joining our community](https://forum.access-hive.org.au/c/cryosphere/34).
 
 ## Documentation
-[Open the ACCESS-AIS3 development record](docs/index.html), including inversion results, workflow notes, and pipeline status.
+[Open the ACCESS-AIS3 development record](https://access-nri.github.io/ACCESS-AIS3/), including inversion results, workflow notes, and pipeline status.
 
 ## License
 [![License](https://img.shields.io/github/license/ACCESS-NRI/ACCESS-AIS3)](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/LICENSE)
