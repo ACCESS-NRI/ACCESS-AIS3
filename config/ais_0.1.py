@@ -9,6 +9,7 @@ import pandas as pd
 import xarray as xr
 import os
 import glob
+import copy
 from pathlib import Path
 
 
@@ -186,7 +187,7 @@ all_steps = [
 # steps = ['param']
 # steps = ['ssa_inverted_solve']
 # steps = ['ssa_relaxation']
-steps = ['ho_friction_inv']
+steps = ['historical_dhdt_tuning']
 # steps = ['ssa_friction_inv_lcurve']
 # steps = ['ssa_friction_inv_sensit']
 
@@ -1939,7 +1940,8 @@ if 'ho_friction_inv' in steps:
     # preserved across restarts (ISSM has no mechanism to serialize it), so each chunk
     # starts a fresh approximation -- a real but unavoidable overhead of this workaround.
     resume_path = f'{model_dir}/AIS3_ho_friction_inv.nc'
-    if os.path.exists(resume_path):
+    resuming = os.path.exists(resume_path)
+    if resuming:
         print(f"-- Resuming from partial HO friction inversion ({resume_path})...")
         md = pyissm.model.io.load_model(resume_path)
     else:
@@ -1953,6 +1955,20 @@ if 'ho_friction_inv' in steps:
     # automatically -- so md.friction.coefficient here is already the warm-started field,
     # just replicated up every vertical column rather than defined only at the base.
     fric_control, fric_field, fric_min, fric_max = friction_law_info(md)
+
+    if resuming:
+        # BUGFIX (found after chunk 2 silently re-ran chunk 1's exact trajectory --
+        # iteration 1's cost matched chunk 1's iteration 1 to 4 significant figures,
+        # 3.0065e7 both times): save_model()/load_model() round-trips md.friction.<field>
+        # unchanged from whatever it was BEFORE the inversion -- the optimized value only
+        # ever lives in md.results.StressbalanceSolution.<fric_control> (same convention
+        # ssa_inverted_solve already handles explicitly when grafting a completed
+        # inversion elsewhere in this file). Loading a checkpoint without this copy silently
+        # restarts from the pre-chunk-1 field every time, burning a full chunk's compute
+        # for zero progress.
+        print(f"-- Copying the resumed chunk's optimized {fric_control} into the live friction field...")
+        _resumed = np.asarray(getattr(md.results.StressbalanceSolution, fric_control)).ravel()
+        setattr(md.friction, fric_field, _resumed)
 
     print(f"-- Restricting friction control to base-layer vertices...")
     # Friction is a basal boundary condition -- only vertexonbase vertices are physically
@@ -1972,13 +1988,33 @@ if 'ho_friction_inv' in steps:
     md.inversion.min_parameters = np.where(on_base, fric_min, _fld)
     md.inversion.max_parameters = np.where(on_base, fric_max, _fld)
     # Per-chunk budget, not the full convergence target -- see the resume/checkpoint note
-    # above. 8 iterations x ~2h/iteration (observed) ~= 16h, leaving ~8h margin within the
-    # 24h wall-clock cap before PBS kills the job. gttol is still the real target: if a
-    # chunk reaches it before exhausting maxsteps, m1qn3 stops early and that's the
-    # converged answer; otherwise the next submission resumes and keeps going.
-    md.inversion.maxsteps = 8
-    md.inversion.maxiter = 8
+    # above. Reduced from 8 to 5 (2026-08-30, alongside the restol/maxiter fix just above):
+    # chunk 4 was killed at the 24h cap while stuck in a single non-converging nonlinear
+    # solve, and now that stressbalance.maxiter is raised to 300, an individual iteration
+    # that genuinely needs more nonlinear steps to converge will legitimately take longer
+    # than the old ~2h/iteration average -- 5 iterations leaves more margin against that
+    # than 8 did. gttol is still the real target: if a chunk reaches it before exhausting
+    # maxsteps, m1qn3 stops early and that's the converged answer; otherwise the next
+    # submission resumes and keeps going.
+    md.inversion.maxsteps = 5
+    md.inversion.maxiter = 5
     md.inversion.gttol = friction_inv_gttol
+    # FIX (2026-09-02, after chunk 4 failed a THIRD time at the exact same point -- iteration
+    # 2's post-restart step, this time exceeding even a raised maxiter=300 without converging,
+    # ~2284 SU burned with zero checkpoint saved): dfmin_frac (pyissm's m1qn3 class,
+    # inversion.py:306, "expected reduction of cost function during the first step") was never
+    # set here, silently defaulting to 1.0 -- i.e. m1qn3 calibrates its very first step
+    # assuming it can cut cost by 100%, producing an oversized step. Every chunk restart loses
+    # m1qn3's curvature estimate (no serialization mechanism across resubmissions), so this
+    # exact miscalibration recurs at EVERY chunk boundary -- consistent with chunks 1 and 3
+    # both seeing large iteration-2 cost spikes (12-19x) that happened to recover, and chunk
+    # 4 (three separate attempts, different restol/maxiter each time) landing somewhere the
+    # forward nonlinear solve genuinely can't converge from. Both prior chunk-4 fixes
+    # (restol=0.001, then maxiter=300) only gave the solver more room to fail slowly and both
+    # failed -- this instead targets the actual mechanism: a much more conservative expected
+    # first-step reduction, so the post-restart step is properly scaled rather than
+    # overshooting.
+    md.inversion.dfmin_frac = 0.3
 
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_ho_friction_inv'
@@ -1999,17 +2035,22 @@ if 'ho_friction_inv' in steps:
     md.cluster.moduleload = cluster.moduleload
     md.cluster.login = cluster.login
     md.cluster.project = cluster.project
+    # TRIED and REVERTED (2026-08-27): normal queue at 768 cores/3072GB (16 nodes) to
+    # dodge hugemem's queue congestion -- OOM'd within 2 minutes (SIGKILL, 2.8TB used of
+    # 3.0TB requested; job 177583055). Confirmed via direct qsub testing that this is a
+    # dead end on `normal`, not just under-provisioned: (a) memory need is NOT flat with
+    # rank count -- it rose from 1.39-1.53TB@96 ranks (hugemem) to >2.8TB@768 ranks
+    # (normal), consistent with docs/inversion_worklog.md §8's per-rank-overhead finding;
+    # (b) Gadi's PBS ties memory strictly to a fixed ncpus/48-derived node count on
+    # `normal` -- a direct qsub test requesting ncpus=768/mem=6144GB (i.e. "same core
+    # count, more memory-only nodes") was rejected outright ("384.0GB per node exceeds
+    # what normal can provide"), so you cannot decouple node count from core count here.
+    # Net: getting more memory on `normal` requires more ranks, but more ranks need even
+    # more total memory -- a losing spiral, since `normal`'s 192GB/node ceiling is ~7.5x
+    # below hugemem's ~1450GB/node. hugemem's small rank count (96) avoids the
+    # rank-overhead growth entirely and comfortably fits the real ~1.4-1.5TB need in its
+    # 2900GB budget -- back to hugemem; the queue-wait is the lesser problem.
     md.cluster.queue = 'hugemem'
-    # Scaled up from the single-node 48-core config validated for ho_thermal_steadystate,
-    # since the m1qn3 inversion's first iteration alone (forward + adjoint solve on the
-    # full ~23.8M-node HO mesh) took >2.6h at 48 cores. 96 cores (2 hugemem nodes), not
-    # 192 -- NCI enforces a project-level walltime cap that shrinks sharply with core
-    # count on hugemem (confirmed via direct qsub testing): 48/96 cores -> 24-48h allowed,
-    # but 144+ cores drops to just 5h, nowhere near enough for a multi-iteration m1qn3
-    # run. 96 cores keeps a full 24h budget while still doubling the parallelism of the
-    # validated single-node config. Memory scaled to 2x (2 nodes) for the same reason
-    # 4x was needed at 192 -- Gadi enforces a PER-NODE cap on hugemem, and a flat -l mem=X
-    # on a multi-node request divides across nodes.
     md.cluster.np = 96
     md.cluster.memory = 1450 * 2
     md.cluster.time = 60 * 24
@@ -2055,7 +2096,32 @@ if 'ho_friction_inv' in steps:
     md.inversion.cost_functions_coefficients = cf
 
     md.transient = pyissm.model.classes.transient.deactivate_all(md.transient)
+    # BUGFIX (2026-08-30, after chunk 4 burned its full 24h budget stuck in the nonlinear
+    # solve, hitting "maximum number of nonlinear iterations (100) exceeded" 3x without
+    # recovering, zero checkpoint saved). This step never set stressbalance.maxiter, so it
+    # silently used ISSM's implicit default of 100 -- exactly the number in the "(100)
+    # exceeded" messages. Explicitly raised to 300 so a genuinely-converging-but-slow
+    # nonlinear solve has room to actually finish rather than being truncated mid-Newton.
+    #
+    # REVERTED 2026-08-30, then RE-REVERTED 2026-08-31: also tried tightening restol
+    # 0.01->0.001 at the same time, following the exact fix this project's own SSA-era
+    # p=q=1 friction inversion work used for a superficially similar symptom
+    # (docs/inversion_worklog.md, ais_0.1_ssa_friction_inv notebook: restol=0.01 was "too
+    # loose", letting the nonlinear solve settle into different Newton states for identical
+    # C and corrupting m1qn3's cost/gradient signal). That precedent was validated on a
+    # ~1.6M-vertex 2D SSA mesh; this is a 23.8M-node 3D HO mesh where the linear solve is
+    # already ~92% of total runtime (confirmed in earlier chunks' own timing breakdowns) --
+    # a 10x tighter tolerance costs far more here per extra Newton iteration. Symptom
+    # confirmed the concern directly: with restol=0.001, the retry's iteration 2 ran 21+
+    # hours without finishing (vs. the pre-fix chunks' spikes recovering within a handful
+    # of iterations inside budget) and was killed with nothing saved -- worse than the
+    # original failure this was meant to fix. The original chunk-4 failure is equally
+    # explained by simply "needed more than 100 iterations" (fixed by maxiter alone) as by
+    # "was converging to a corrupted state" (the SSA-era mechanism) -- no direct evidence
+    # here it was the latter. Reverted restol to 0.01; keeping maxiter=300, which is the
+    # uncontroversial part of the original fix (pure headroom, no added per-iteration cost).
     md.stressbalance.restol = 0.01
+    md.stressbalance.maxiter = 300
     md.stressbalance.reltol = 0.1
     md.stressbalance.abstol = np.nan
     md.settings.solver_residue_threshold = 1e-3
@@ -2133,19 +2199,26 @@ if 'melt_gamma_tuning' in steps:
 
     # basin_id is per-ELEMENT (pyISSM basalforcings.ismip6 docstring); nearest-neighbour
     # lookup on element centroids against the 8km ocean grid.
+    # CONFIRMED (2026-08-30, read Model.py:815-818 directly rather than guessing): extrude()
+    # unconditionally sets mesh.x2d/y2d/elements2d/numberofelements2d from the pre-extrusion
+    # 2D mesh -- these attributes are always present on an extruded model, the hasattr
+    # fallback below never actually triggers for AIS3_ho_friction_inv.nc.
     elx = np.asarray(md.mesh.elements2d if hasattr(md.mesh, 'elements2d') else md.mesh.elements).astype(int) - 1
     vx2d = np.asarray(md.mesh.x2d if hasattr(md.mesh, 'x2d') else md.mesh.x).ravel()
     vy2d = np.asarray(md.mesh.y2d if hasattr(md.mesh, 'y2d') else md.mesh.y).ravel()
-    # NOTE: elx may reference the 3D element list (mds.mesh.elements) if elements2d isn't
-    # populated the way expected -- verify at run time; the 2D-mesh-only fields
-    # (x2d/y2d/elements2d) are documented as preserved by Model.extrude() but exact naming
-    # should be double-checked against this pyissm version's actual Model.extrude() output.
     if elx.shape[1] >= 3:
         ecx = vx2d[elx[:, :3]].mean(axis=1)
         ecy = vy2d[elx[:, :3]].mean(axis=1)
     gxx, gyy = np.meshgrid(gx, gy)
     basin_lookup = NearestNDInterpolator(np.column_stack([gxx.ravel(), gyy.ravel()]), basin_id_grid.ravel())
-    md.basalforcings.basin_id = basin_lookup(np.column_stack([ecx, ecy])).astype(float)
+    basin_id_2d = basin_lookup(np.column_stack([ecx, ecy])).astype(float)
+    # BUGFIX (2026-08-31, found via a real consistency-check failure): basin_id is
+    # per-2D-element (3,173,063 for this mesh) but ISSM expects it per-3D-element
+    # (44,422,882 = numberofelements2d x 14 vertical element layers) -- basin identity is
+    # horizontal-only, so replicate it uniformly up every column via the project's own
+    # established 2D->3D utility (same one used elsewhere for vertex fields), rather than
+    # leaving it at the 2D element count.
+    md.basalforcings.basin_id = pyissm.model.mesh._project_3d(md, vector=basin_id_2d, type='element', layer=0)
     md.basalforcings.num_basins = num_basins
     md.basalforcings.delta_t = delta_t_per_basin
     md.basalforcings.islocal = 1  # local quadratic parameterisation, matching the gamma0 prior source
@@ -2172,19 +2245,66 @@ if 'melt_gamma_tuning' in steps:
     print(f"-- Loading ITS_LIVE observed ice-shelf melt rate (calibration target)...")
     catalog = ccdtools.catalog.DataCatalog()
     melt_obs_ds = catalog.load_dataset('measures_its_live_antarctic_quarterly_ice_shelf_height_change')
-    # NOTE: variable name confirmed present as 'melt' by the earlier data survey (see plan
-    # doc) but its exact spelling/units in THIS specific loaded object should be checked
-    # against melt_obs_ds.data_vars at run time before trusting the interpolation below.
-    melt_obs_grid = melt_obs_ds['melt']
-    melt_obs_on_mesh = pyissm.data.interp.xr_to_mesh(melt_obs_ds, 'melt', md.mesh.x, md.mesh.y)
+    # BUGFIX (2026-08-30, checked the actual file directly rather than trusting the plan
+    # doc's survey): 'melt' is TIME-VARYING (dims ('time','y','x'), quarterly 1992-2017,
+    # units m/yr) -- passing it straight to xr_to_mesh (which assumes a 2D (y,x) rectilinear
+    # grid) would have been a shape mismatch or silently wrong. Use 'melt_mean' instead --
+    # the file already provides a pre-computed time-mean field, dims ('y','x'), exactly the
+    # steady-state calibration target this stage needs (coordinate names 'x'/'y' confirmed
+    # to match xr_to_mesh's defaults).
+    melt_obs_on_mesh = pyissm.data.interp.xr_to_mesh(melt_obs_ds, 'melt_mean', md.mesh.x, md.mesh.y)
 
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_melt_gamma_tuning'
-    md.cluster = cluster
+    # BUGFIX (2026-08-30): this step operates on AIS3_ho_friction_inv.nc, the same
+    # ~23.8M-node full-continental HO mesh that OOM'd ho_thermal_steadystate outright at the
+    # shared cluster's default 190GB/normal-queue config (see that step's own history) --
+    # applying the same hugemem override proactively rather than waiting to rediscover the
+    # same failure. This step doesn't run the expensive stress-balance/adjoint solve (only
+    # masstransport, per below), so it's likely lighter than the friction inversion's own
+    # 96-core/2900GB hugemem config -- mirrored here anyway since it's the closest already-
+    # validated forward-solve config at this exact mesh scale; revisit down if this proves
+    # oversized once actually run.
+    md.cluster = pyissm.model.classes.cluster.gadi()
+    md.cluster.codepath = cluster.codepath
+    md.cluster.executionpath = cluster.executionpath
+    md.cluster.storage = cluster.storage
+    md.cluster.moduleuse = cluster.moduleuse
+    md.cluster.moduleload = cluster.moduleload
+    md.cluster.login = cluster.login
+    md.cluster.project = cluster.project
+    md.cluster.queue = 'hugemem'
+    md.cluster.np = 96
+    md.cluster.memory = 1450 * 2
+    md.cluster.time = 60 * 24
     md.settings.waitonlock = 0
+
+    # BUGFIX (2026-08-31): AIS3_ho_friction_inv.nc still carries its own m1qn3 control
+    # inversion config (iscontrol=1, cost_functions=[101,103,501]) from ho_friction_inv --
+    # never reset here, unlike ho_relaxation/historical_dhdt_tuning which explicitly clear
+    # it before their own forward-only solves. Left set, marshalling crashed
+    # (KeyError: '101' in class_utils.marshall_inversion_cost_functions) trying to
+    # serialize a stale control config this step never needs -- this is a plain forward
+    # calibration sweep, not a control inversion.
+    md.inversion.iscontrol = 0
 
     md.transient = pyissm.model.classes.transient.deactivate_all(md.transient)
     md.transient.ismasstransport = 1   # melt only enters the solve as a masstransport BC flux
+    # BUGFIX (2026-08-31): masstransport.spcthickness defaults to a bare scalar NaN, not a
+    # properly-shaped per-vertex array (pyissm/model/classes/masstransport.py:62) -- the
+    # exact same bug already found and fixed in ssa_relaxation ("invalid timeseries row
+    # count" there too) when ismasstransport was first enabled on the SSA mesh. This is the
+    # first HO/3D-mesh step to ever enable ismasstransport, so it was never caught on this
+    # mesh lineage until now. NaN still means "no constraint" per that class's convention;
+    # just needs the right shape.
+    md.masstransport.spcthickness = np.full(md.mesh.numberofvertices, np.nan)
+    # BUGFIX (2026-08-31, found via a real 4-of-5-sweep-jobs crash): masstransport reads
+    # md.smb.mass_balance as an input even with issmb=0 -- AIS3_ho_friction_inv.nc never had
+    # it populated (ais_0.1_param.py never sets it; same gap ssa_relaxation already
+    # documented and fixed with a zero placeholder for its own short diagnostic run). Zero
+    # SMB is a defensible placeholder here too: this solve's whole purpose is evaluating the
+    # basalforcings melt flux, not simulating real surface mass balance.
+    md.smb.mass_balance = np.zeros(md.mesh.numberofvertices)
     md.timestepping.start_time = 0
     md.timestepping.final_time = 0.01  # yr -- deliberately tiny: evaluate melt, don't evolve geometry
     md.timestepping.time_step = 0.01
@@ -2196,8 +2316,16 @@ if 'melt_gamma_tuning' in steps:
     # (assign_cost_functions/parameter_sensitivity) is hardcoded to inversion cost functions
     # and a Stressbalance solve -- neither applies to a scalar basalforcings field, so the
     # actual submit/compare loop below is hand-written rather than reusing those.
+    # EXTENDED LOWER RANGE (2026-08-31): the original {0.5,0.75,1.0,1.25,1.5}x sweep found
+    # melt RMSE monotonically INCREASING with gamma_0 across the whole range (12.60 -> 19.53
+    # m/yr), with the best point sitting right at the low edge (0.5x) -- the sweep never
+    # bracketed a minimum, so 0.5x was only "best of five points on a still-falling line",
+    # not a validated optimum. Extending well below 0.5x to actually find where RMSE turns
+    # over (or confirm it doesn't, which would itself be informative -- see the note in
+    # this session's conversation about RMSE->0 as gamma_0->0 potentially just reflecting
+    # most of the domain having near-zero true melt, not a physically meaningful optimum).
     gamma_grid = pyissm.inversion.sensitivity.build_parameter_grid(
-        {0: [gamma0_prior * f for f in (0.5, 0.75, 1.0, 1.25, 1.5)]})
+        {0: [gamma0_prior * f for f in (0.05, 0.1, 0.15, 0.2, 0.3, 0.4)]})
 
     if save:
         print(f"-- Loading melt calibration sweep results and comparing to observations...")
@@ -2206,7 +2334,7 @@ if 'melt_gamma_tuning' in steps:
             gname = f"AIS3_melt_gamma_tuning_g{row['run_id']}"
             mdi = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_friction_inv.nc')  # cheap reload for field shapes
             mdi.miscellaneous.name = gname
-            mdi.cluster = cluster
+            mdi.cluster = md.cluster
             try:
                 mdi = pyissm.model.execute.solve(mdi, 'Transient', load_only = True, runtime_name = False)
             except Exception as e:
@@ -2231,10 +2359,16 @@ if 'melt_gamma_tuning' in steps:
     else:
         print(f"-- Submitting gamma_0 sweep ({len(gamma_grid)} runs)...")
         for _, row in gamma_grid.iterrows():
-            mdi = md.extract(np.ones(md.mesh.numberofvertices, dtype=bool))  # cheap full copy per run
+            # BUGFIX (2026-08-30): md.extract() with an all-true mask still does a full
+            # ISSM mesh-connectivity rebuild (vertex/element renumbering, connectivity
+            # recompute) -- real work, not a cheap no-op, at 23.8M nodes. copy.deepcopy()
+            # duplicates the in-memory object directly without touching ISSM's mesh
+            # machinery at all -- genuinely cheap, and correct here since every run needs
+            # the identical mesh/geometry, only gamma_0 differs.
+            mdi = copy.deepcopy(md)
             mdi.basalforcings.gamma_0 = float(row['cf0'])
             mdi.miscellaneous.name = f"AIS3_melt_gamma_tuning_g{row['run_id']}"
-            mdi.cluster = cluster
+            mdi.cluster = md.cluster
             print(f"   run {row['run_id']}: gamma_0={row['cf0']:.1f}")
             pyissm.model.execute.solve(mdi, 'Transient', load_only = False, runtime_name = False)
 
@@ -2258,6 +2392,19 @@ if 'ho_relaxation' in steps:
     print(f"-- Loading melt-calibrated model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_melt_gamma_tuning.nc')
 
+    # BUGFIX (2026-09-02, found via a real marshalling crash on first run):
+    # "basalforcings.tf" is a list of per-depth-layer (nv+1, 1) arrays, built with real numpy
+    # arrays wherever it's freshly constructed (melt_ismip7_calibration.py,
+    # finalize_melt_calibration.py) -- but save_model/load_model's round-trip through
+    # netCDF/HDF5 for this ragged list-of-matrices ("MatArray") field returns each entry as a
+    # plain Python list instead, not preserved as ndarray. Marshalling's own scaling step
+    # (`yts * data[i][-1, :]`) needs numpy elementwise multiply and crashes on a Python list
+    # ("can't multiply sequence by non-int of type 'float'"). Never caught before because no
+    # earlier step reloaded a model with `tf` already populated and then re-marshalled it for
+    # a fresh solve -- this is the first one. Re-cast to real float arrays here, once, right
+    # after loading.
+    md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
+
     md.inversion.iscontrol = 0
     md.verbose.solution = 1
 
@@ -2276,17 +2423,44 @@ if 'ho_relaxation' in steps:
 
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_ho_relaxed'
-    md.cluster = cluster
-    md.settings.waitonlock = 0
+    # BUGFIX (2026-09-02, found before ever running this step): the shared default `cluster`
+    # (48 cores/190GB/normal) is sized for the SSA track's much smaller mesh -- this step
+    # still operates on the same ~23.8M-node HO mesh as ho_thermal_steadystate/ho_friction_inv
+    # /melt_gamma_tuning, all of which needed the hugemem override after OOM'ing outright at
+    # 190GB/normal. Applying the same validated config here rather than waiting to rediscover
+    # the same failure.
+    md.cluster = pyissm.model.classes.cluster.gadi()
+    md.cluster.codepath = cluster.codepath
+    md.cluster.executionpath = cluster.executionpath
+    md.cluster.storage = cluster.storage
+    md.cluster.moduleuse = cluster.moduleuse
+    md.cluster.moduleload = cluster.moduleload
+    md.cluster.login = cluster.login
+    md.cluster.project = cluster.project
+    md.cluster.queue = 'hugemem'
+    md.cluster.np = 96
+    md.cluster.memory = 1450 * 2
+    md.cluster.time = 60 * 24
+    # BUGFIX (2026-09-02, found before ever running this step -- same pattern already fixed
+    # in ssa_inverted_solve/ssa_relaxation/ho_thermal_steadystate): waitonlock=0 disables the
+    # blocking wait, but the "if save" branch called solve() with load_only=True, which never
+    # submits (pyissm/model/execute.py:1078-1082 unconditional early return) -- it only loads
+    # results from an already-finished prior run, which never existed for this step. Fixed to
+    # the single synchronous submit-and-wait call used everywhere else in this pipeline.
+    md.settings.waitonlock = 1440  # minutes
+    md.settings.solver_residue_threshold = 1e-3
 
-    if save:
-        print(f"-- Loading transient solution...")
-        md = pyissm.model.execute.solve(md, 'Transient', load_only = True, runtime_name = False)
-        print(f"\nSaving to {model_dir}/AIS3_ho_relaxed.nc")
-        pyissm.model.io.save_model(md, f'{model_dir}/AIS3_ho_relaxed.nc')
-    else:
-        print(f"-- Submitting post-calibration relaxation...")
-        md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
+    print(f"-- Submitting and waiting on post-calibration relaxation...")
+    md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
+
+    if diagnostics:
+        dH = md.results.TransientSolution[-1].Thickness - md.geometry.thickness
+        print(f"\nRELAXATION DIAGNOSTICS:")
+        print(f"   Max |dH| over relaxation: {np.nanmax(np.abs(dH)):.2f} m")
+        print(f"   Mean |dH| over relaxation: {np.nanmean(np.abs(dH)):.2f} m")
+
+    print(f"\nSaving to {model_dir}/AIS3_ho_relaxed.nc")
+    pyissm.model.io.save_model(md, f'{model_dir}/AIS3_ho_relaxed.nc')
 
 
 ## ------------------------------------
@@ -2304,8 +2478,69 @@ if 'historical_dhdt_tuning' in steps:
     print(f" HISTORICAL RUN (1995-2019) TUNED AGAINST OBSERVED dH/dt"     )
     print("-------------------------------------------------------------")
 
-    print(f"-- Loading post-calibration relaxed model...")
-    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_relaxed.nc')
+    # Chunked warm-restart (2026-09-18): the full 240-timestep (1995-2019 @ 0.1yr) transient
+    # needs ~36h of compute at 96 cores (observed ~9 min/iteration reaching 160/240 before
+    # being killed), but NCI hard-caps 96-cpu hugemem jobs at exactly 24h project-wide --
+    # confirmed via direct qsub probe ("Maximum walltime for job requesting 96 CPUs in
+    # hugemem queue is 24.0 hours"), a queue policy ceiling, not a walltime-setting issue.
+    # Dropping to 48 cpus doubles the cap to 48h but also roughly doubles per-iteration time
+    # (fewer ranks on the same 23.8M-node mesh), netting out no better. That first attempt
+    # hit the 24h wall with ZERO checkpoint saved -- this step had no resume mechanism, unlike
+    # ho_friction_inv's chunked m1qn3 inversion -- losing the full ~24h/6917 SU outright.
+    # Fix: mirror ho_friction_inv's pattern, but chunked over wall-clock TIME rather than
+    # m1qn3 ITERATIONS -- each submission advances md.timestepping by CHUNK_YEARS years,
+    # saving/reloading the SAME AIS3_historical_1995_2019.nc file as both checkpoint and
+    # final result (same convention ho_friction_inv uses for AIS3_ho_friction_inv.nc).
+    # solve() only writes results after the mpiexec process returns normally (confirmed for
+    # ho_friction_inv), so a walltime-killed chunk saves nothing and simply gets resubmitted
+    # from the last successfully-completed chunk boundary -- worst-case loss is now ONE
+    # chunk, not the full run.
+    CHUNK_YEARS = 6.0  # 60 timesteps/chunk @ 0.1yr -- ~9h at the observed rate, comfortable
+    # margin under the 24h/96-cpu cap (4 chunks total: 1995-2001-2007-2013-2019).
+    FULL_START_TIME = 1995.0
+    FULL_END_TIME = 2019.0  # bounded by dhdt_cpom coverage, see note below
+
+    resume_path = f'{model_dir}/AIS3_historical_1995_2019.nc'
+    resuming = os.path.exists(resume_path)
+    if resuming:
+        print(f"-- Resuming historical transient from checkpoint ({resume_path})...")
+        md = pyissm.model.io.load_model(resume_path)
+        md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
+        current_time = float(md.timestepping.final_time)
+        print(f"   Checkpoint completed through t={current_time} (of {FULL_END_TIME})")
+
+        # Carry the last chunk's final geometry/grounding-line state forward as this chunk's
+        # initial condition. ice_levelset is left untouched (calving isn't modelled here --
+        # only isgroundingline/ocean_levelset evolves), and friction/rheology/forcing config
+        # are unchanged since this is the same md object being resumed, not rebuilt.
+        ts = md.results.TransientSolution
+        last = ts[-1] if isinstance(ts, list) else ts
+        # Defensive against the flattened-bare-object TransientSolution quirk found in
+        # check_ho_relaxed.py -- shouldn't trigger for a 60-step chunk (only seen there for a
+        # single-entry result), but cheap to guard against.
+        nv3d_chk = md.mesh.numberofvertices
+        def _last_step(field_name):
+            arr = np.asarray(getattr(last, field_name)).ravel()
+            return arr if arr.size == nv3d_chk else arr.reshape(-1, nv3d_chk)[-1]
+
+        md.geometry.thickness = _last_step('Thickness')
+        md.geometry.surface = _last_step('Surface')
+        md.geometry.base = _last_step('Base')
+        md.mask.ocean_levelset = _last_step('MaskOceanLevelset')
+        # Free the prior chunk's results before submitting the next one -- same
+        # memory-pressure precedent as melt_gamma_tuning_ssa's TransientSolution-stripping fix.
+        md.results.TransientSolution = []
+    else:
+        print(f"-- Loading post-calibration relaxed model (fresh start)...")
+        md = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_relaxed.nc')
+        # BUGFIX: same tf round-trip issue as ho_relaxation just above (save_model/load_model
+        # returns each basalforcings.tf entry as a plain Python list, not ndarray -- crashes
+        # marshalling's numpy-elementwise scaling step). Same fix.
+        md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
+        current_time = FULL_START_TIME
+
+    chunk_final_time = min(current_time + CHUNK_YEARS, FULL_END_TIME)
+    print(f"-- This chunk: t={current_time} -> t={chunk_final_time}")
 
     md.inversion.iscontrol = 0
     md.verbose.solution = 1
@@ -2317,9 +2552,12 @@ if 'historical_dhdt_tuning' in steps:
     md.transient.isthermal = 0  # TODO: consider re-enabling once stage 1/2 are validated
     md.transient.isgroundingline = 1
     md.groundingline.migration = 'SubelementMigration'
+    # Needed both to warm-restart the next chunk (Thickness/Surface/Base/MaskOceanLevelset)
+    # and for the final dH/dt diagnostic -- same convention as ho_relaxation's requested_outputs.
+    md.transient.requested_outputs = ['default', 'Vel', 'Thickness', 'Surface', 'Base', 'MaskOceanLevelset']
 
-    md.timestepping.start_time = 1995
-    md.timestepping.final_time = 2019  # bounded by dhdt_cpom coverage, see note above
+    md.timestepping.start_time = current_time
+    md.timestepping.final_time = chunk_final_time
     md.timestepping.time_step  = 0.1   # years
 
     print(f"-- Building time-varying SMB from RACMO 1995-2019 annual means...")
@@ -2343,7 +2581,11 @@ if 'historical_dhdt_tuning' in steps:
         # kg/m^2/month water-equiv mass -> m ice-equiv thickness/yr: divide by rho_ice, sum
         # the 12 months (mass balance accumulates additively), no /12 (already summing
         # monthly totals into one annual total, not averaging a monthly rate).
-        smb_yr_myr = (smb_yr.sum('time') / md.materials.rho_ice).to_numpy()
+        # BUGFIX (found on first real run): smbgl carries a singleton 'height' dimension
+        # (dims: time, height, rlat, rlon) that survives summing over 'time', leaving a 3D
+        # (1, rlat, rlon) array where lat/lon (and hence racmo_x/racmo_y) are 2D (rlat, rlon)
+        # -- points_to_mesh requires matching shapes. Squeeze it out.
+        smb_yr_myr = (smb_yr.sum('time') / md.materials.rho_ice).squeeze('height').to_numpy()
         mb_arr[:nv, i] = pyissm.data.interp.points_to_mesh(racmo_x, racmo_y, smb_yr_myr, md.mesh.x, md.mesh.y)
         print(f"   {yr}: mesh-mean SMB = {np.nanmean(mb_arr[:nv, i]):.3f} m ice eq/yr")
     mb_arr[nv, :] = smb_years.astype(float)  # ISSM timeseries convention: last row = time (yr)
@@ -2352,13 +2594,44 @@ if 'historical_dhdt_tuning' in steps:
 
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_historical_1995_2019'
-    md.cluster = cluster
-    md.settings.waitonlock = 0
+    # BUGFIX (2026-09-02, found before ever running this step -- same as ho_relaxation just
+    # above): shared default `cluster` (48 cores/190GB/normal) is sized for the SSA track;
+    # this step still runs on the ~23.8M-node HO mesh, needs the same hugemem override every
+    # other HO-scale step uses.
+    md.cluster = pyissm.model.classes.cluster.gadi()
+    md.cluster.codepath = cluster.codepath
+    md.cluster.executionpath = cluster.executionpath
+    md.cluster.storage = cluster.storage
+    md.cluster.moduleuse = cluster.moduleuse
+    md.cluster.moduleload = cluster.moduleload
+    md.cluster.login = cluster.login
+    md.cluster.project = cluster.project
+    md.cluster.queue = 'hugemem'
+    md.cluster.np = 96
+    md.cluster.memory = 1450 * 2
+    # Per-CHUNK budget, not the full run -- see the chunking note above. ~9h observed for a
+    # 6-year/60-timestep chunk at this rate; 14h leaves real margin under the 24h/96-cpu cap
+    # (which is a hard NCI project ceiling, confirmed via direct qsub probe -- cannot be
+    # raised by requesting more walltime here).
+    md.cluster.time = 60 * 14
+    # BUGFIX (2026-09-02, same pattern as ho_relaxation just above): waitonlock=0 +
+    # load_only=True in the "if save" branch never actually submits -- fixed to the single
+    # synchronous submit-and-wait call used everywhere else in this pipeline.
+    md.settings.waitonlock = 60 * 15  # minutes -- must exceed cluster.time above
+    md.settings.solver_residue_threshold = 1e-3
 
-    if save:
-        print(f"-- Loading historical transient solution...")
-        md = pyissm.model.execute.solve(md, 'Transient', load_only = True, runtime_name = False)
+    print(f"-- Submitting and waiting on historical transient chunk "
+          f"(t={current_time} -> {chunk_final_time})...")
+    md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
 
+    print(f"\nSaving checkpoint to {resume_path}")
+    pyissm.model.io.save_model(md, resume_path)
+
+    if chunk_final_time < FULL_END_TIME:
+        print(f"-- Chunk complete (t={chunk_final_time} of {FULL_END_TIME}). Rerun this step "
+              f"again (steps=['historical_dhdt_tuning']) to continue from the checkpoint.")
+    else:
+        print(f"-- Final chunk complete -- full 1995-2019 run finished. Running dH/dt diagnostics...")
         print(f"-- Comparing simulated dH/dt against MIPKIT's dhdt_cpom (1993-2019)...")
         mipkit = xr.open_dataset('/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/mipkit/AntarcticaObsISMIP7-v1.2.nc')
         # dhdt_cpom is annual 1993-2019 on the 1km grid (y1km, x1km) -- use its LAST available
@@ -2369,10 +2642,18 @@ if 'historical_dhdt_tuning' in steps:
         dhdt_obs_mesh = pyissm.data.interp.xr_to_mesh(
             mipkit, 'dhdt_cpom', md.mesh.x, md.mesh.y, x_var = 'x1km', y_var = 'y1km')
 
+        # H0 comes from AIS3_ho_relaxed.nc (the true 1995 starting geometry), NOT this
+        # chunk's own TransientSolution[0] -- that only spans the LAST chunk (e.g.
+        # 2013-2019), since each chunk's results are checkpointed independently rather than
+        # accumulated into one full-history object (see the chunking note above).
+        md_start_ref = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_relaxed.nc')
+        H0 = np.asarray(md_start_ref.geometry.thickness).ravel()
         thick_ts = md.results.TransientSolution
-        H0 = np.asarray(thick_ts[0].Thickness).ravel()
-        H1 = np.asarray(thick_ts[-1].Thickness).ravel()
-        years_elapsed = md.timestepping.final_time - md.timestepping.start_time
+        final_step = thick_ts[-1] if isinstance(thick_ts, list) else thick_ts
+        H1_raw = np.asarray(final_step.Thickness).ravel()
+        nv3d_fin = md.mesh.numberofvertices
+        H1 = H1_raw if H1_raw.size == nv3d_fin else H1_raw.reshape(-1, nv3d_fin)[-1]
+        years_elapsed = FULL_END_TIME - FULL_START_TIME
         dhdt_sim = (H1 - H0) / years_elapsed
 
         gr = (np.asarray(md.mask.ice_levelset).ravel() < 0) & (np.asarray(md.mask.ocean_levelset).ravel() > 0)
@@ -2389,12 +2670,8 @@ if 'historical_dhdt_tuning' in steps:
         # done automatically here since each candidate requires re-running the full
         # multi-stage chain (friction/melt/relaxation/historical), which is a substantial
         # compute cost to automate blindly rather than direct.
-
-        print(f"\nSaving to {model_dir}/AIS3_historical_1995_2019.nc")
-        pyissm.model.io.save_model(md, f'{model_dir}/AIS3_historical_1995_2019.nc')
-    else:
-        print(f"-- Submitting historical transient run...")
-        md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
+        # NOTE: AIS3_historical_1995_2019.nc was already saved above as this final chunk's
+        # checkpoint -- it now holds the completed run, no separate save needed here.
 
 
 ## ------------------------------------

@@ -181,13 +181,18 @@ print(f"\nDEFINING INITIAL FRICTION")
 # m1qn3's line search relies on. Fixed with restol=0.001: FrictionC now moves across 93% of
 # grounded vertices, cost dropped 76%, grounded RMSE improved 188.6->94.2 (Cmax=2.0; see
 # AIS3_ssa_friction_inv_reg_lcurve/schoof_m1qn3_tightrestol_cmax2.0/). NOTE this RMSE is still
-# worse than Budd's validated 60.4, this Cmax=2.0 step is not the eventual target (0.8-0.85, see
-# friction.Cmax below), and the run stopped on its iteration budget (omode=5), not full
-# convergence -- pushing toward the real target Cmax hit repeated new failure modes (nonlinear
-# solver non-convergence, then a separate dxmin stall from an over-conservative dfmin_frac) that
-# are still open. docs/inversion_worklog.md 5.3-5.4 also documents that Schoof does not fix the
-# known Siple Coast trunk deficit either. Chosen anyway per explicit direction to proceed with
-# Schoof over Budd for this pipeline run.
+# worse than Budd's validated 60.4, and this Cmax=2.0 step is not the eventual target (0.8-0.85,
+# see friction.Cmax below). The run stopped on its iteration budget (omode=5), which read as
+# "not full convergence" -- CHECKED DIRECTLY (2026-08-27, docs/inversion_worklog.md section 1's
+# reconciliation note) and this specific checkpoint is in fact converged in practice: a
+# continuation reached genuine dxmin at essentially the same cost (0.007% different), and the C
+# field actually grafted into AIS3_inverted.nc is bit-identical (corr=0.9999999999981) to that
+# converged state. What IS still genuinely open: pushing Cmax further down toward the real
+# 0.8-0.85 target hit repeated new failure modes (nonlinear solver non-convergence, then a
+# separate dxmin stall from an over-conservative dfmin_frac) -- that push, not this Cmax=2.0
+# checkpoint's own convergence, is the unresolved item. docs/inversion_worklog.md 5.3-5.4 also
+# documents that Schoof does not fix the known Siple Coast trunk deficit either. Chosen anyway
+# per explicit direction to proceed with Schoof over Budd for this pipeline run.
 friction_law = 'schoof'  # 'schoof' or 'budd'
 
 if friction_law == 'schoof':
