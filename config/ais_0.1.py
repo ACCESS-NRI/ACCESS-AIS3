@@ -2523,10 +2523,33 @@ if 'historical_dhdt_tuning' in steps:
             arr = np.asarray(getattr(last, field_name)).ravel()
             return arr if arr.size == nv3d_chk else arr.reshape(-1, nv3d_chk)[-1]
 
-        md.geometry.thickness = _last_step('Thickness')
-        md.geometry.surface = _last_step('Surface')
-        md.geometry.base = _last_step('Base')
-        md.mask.ocean_levelset = _last_step('MaskOceanLevelset')
+        # BUGFIX (2026-09-22, found via chunk 2's real failure): trusting the raw carried-
+        # forward Surface/Base output fields directly crashed chunk 2's pre-solve consistency
+        # check with "Model consistency error: base < bed on one or more vertices". Root
+        # cause: at vertices whose grounding state just flipped this chunk (484,350 of them
+        # went floating->grounded in chunk 1 alone, see the chunk-1 sanity check), the
+        # solver's own output Base can still reflect the OLD floating-basis draft depth
+        # rather than snapping exactly to bed, so it can end up fractionally below bed even
+        # though MaskOceanLevelset already reports the vertex as grounded -- a self-
+        # consistency gap in the raw output, not something safe to carry forward verbatim.
+        # Fix: carry forward Thickness and MaskOceanLevelset (the real prognostic state) but
+        # RECOMPUTE Base/Surface from them via the same hydrostatic-floating/bed-grounded
+        # formula used throughout this pipeline (restore_floored_thickness.py), which
+        # guarantees base >= bed everywhere by construction instead of trusting solver output.
+        H_new = _last_step('Thickness')
+        ol_new = _last_step('MaskOceanLevelset')
+        bed = np.asarray(md.geometry.bed).ravel()
+        ri = float(md.materials.rho_ice)
+        rw = float(md.materials.rho_water)
+        grounded_new = ol_new >= 0
+        base_new = np.where(grounded_new, bed, -H_new * ri / rw)
+        base_new = np.maximum(base_new, bed)  # never below bedrock, either regime
+        surf_new = base_new + H_new
+
+        md.geometry.thickness = H_new
+        md.geometry.base = base_new
+        md.geometry.surface = surf_new
+        md.mask.ocean_levelset = ol_new
         # Free the prior chunk's results before submitting the next one -- same
         # memory-pressure precedent as melt_gamma_tuning_ssa's TransientSolution-stripping fix.
         md.results.TransientSolution = []
@@ -2617,7 +2640,17 @@ if 'historical_dhdt_tuning' in steps:
     # BUGFIX (2026-09-02, same pattern as ho_relaxation just above): waitonlock=0 +
     # load_only=True in the "if save" branch never actually submits -- fixed to the single
     # synchronous submit-and-wait call used everywhere else in this pipeline.
-    md.settings.waitonlock = 60 * 15  # minutes -- must exceed cluster.time above
+    #
+    # BUGFIX (2026-09-23, found via chunk 2's near-miss): the "waiting for lock file" counter
+    # this waitonlock bounds includes the inner job's PBS QUEUE wait, not just its actual
+    # compute time -- chunk 2 needed 899 of a 900-minute (15h) waitonlock budget to finish,
+    # one minute from being abandoned by the outer driver even though the inner job would
+    # have completed fine given a little more time. hugemem queue congestion has ranged from
+    # a few hours to ~44h across this session's chunks -- 15h has no real margin against
+    # that variance. Bumped to 40h (still leaves ~5h for the outer's own
+    # setup/load-results/save-checkpoint overhead within its 45h PBS walltime, see the
+    # launcher).
+    md.settings.waitonlock = 60 * 40  # minutes -- must exceed cluster.time above
     md.settings.solver_residue_threshold = 1e-3
 
     print(f"-- Submitting and waiting on historical transient chunk "
@@ -2638,9 +2671,15 @@ if 'historical_dhdt_tuning' in steps:
         # year as the closest match to our run's 2019 endpoint rather than trying to
         # reconstruct a full matching time series from a 27-step coordinate whose exact
         # date alignment to the 0.1yr model timestep should be checked at run time.
-        dhdt_obs_grid = mipkit['dhdt_cpom'].isel(cpom_dhdt_time = -1)
+        # BUGFIX (2026-09-21, found via check_historical_chunk1.py crashing): xr_to_mesh
+        # requires a 2D variable on a rectilinear grid, but mipkit's own dhdt_cpom is 3D
+        # (carries cpom_dhdt_time) -- passing the full dataset+var_name through crashes with
+        # "must be 2D on a rectilinear grid". Wrap the already-sliced 2D field back into a
+        # one-variable Dataset (keeping x1km/y1km coords) instead of passing the un-sliced
+        # 3D variable directly.
+        dhdt_obs_grid = mipkit[['dhdt_cpom']].isel(cpom_dhdt_time = -1)
         dhdt_obs_mesh = pyissm.data.interp.xr_to_mesh(
-            mipkit, 'dhdt_cpom', md.mesh.x, md.mesh.y, x_var = 'x1km', y_var = 'y1km')
+            dhdt_obs_grid, 'dhdt_cpom', md.mesh.x, md.mesh.y, x_var = 'x1km', y_var = 'y1km')
 
         # H0 comes from AIS3_ho_relaxed.nc (the true 1995 starting geometry), NOT this
         # chunk's own TransientSolution[0] -- that only spans the LAST chunk (e.g.
