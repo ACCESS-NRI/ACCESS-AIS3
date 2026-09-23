@@ -994,13 +994,176 @@ the same 23.8M-node mesh), netting out no better.
 
 **Chunk 1 (job 179337124, t=1995→2001): succeeded.** Exit 0, 17h16m walltime used of the
 20h budget, 2486.96 SU, checkpoint saved cleanly to `AIS3_historical_1995_2019.nc` (159GB).
-Confirms the chunking mechanism works end-to-end. Follow-up sanity check
-(`check_historical_chunk1.py`, job 179486566) submitted to inspect the chunk-1 checkpoint
-(field sanity, grounding-line migration activity, dH distribution, early dH/dt vs
-`dhdt_cpom` as a 6-of-24-year directional check only) — pending.
+Confirms the chunking mechanism works end-to-end.
+
+**Chunk-1 sanity check** (`check_historical_chunk1.py`): first attempt (job 179486566)
+crashed on the dH/dt-vs-`dhdt_cpom` comparison — see the `xr_to_mesh` bug below, same root
+cause as found in the production code. Resubmitted (job 179494421) after the fix, succeeded
+cleanly. Findings:
+- Field sanity: clean — zero NaN/Inf across Vel/Thickness/Surface/Base, zero negative
+  thickness.
+- Grounding-line migration over the 6 years: 130,380 vertices newly floating vs **484,350
+  newly grounded** — a real, persistent asymmetry (survived the rerun, not an artifact of
+  the crashed attempt). Likely explanation: `AIS3_ho_relaxed.nc` only had 1 year of
+  relaxation after the thickness-flooring fix (§4i) was applied, so a lot of geometric
+  adjustment may still be working through the system in these early chunk-1 years rather
+  than reflecting a genuine historical grounding-line trend. Flagged to watch across chunks
+  2-4 — if the asymmetry shrinks, that supports "settling"; if it persists at this scale
+  throughout, worth a deeper look.
+- dH distribution: median ≈ -0.30m (flat), IQR -8.65 to +8.51m (bulk of the ice sheet
+  stable), but wide tails (p0=-1544.68m, p100=+1012.11m) — consistent with a handful of
+  vertices still settling, matching the GL-migration finding above.
+- Early dH/dt vs `dhdt_cpom` (6-of-24-year rate, directional check only): RMSE=3.758 m/yr,
+  mean bias=+0.340 m/yr (sim slightly less negative than obs). Small relative to typical
+  dynamic-region dH/dt magnitudes — an encouraging early signal, though not the official
+  comparison (that happens once all 24 years complete).
+
+**Bug found and fixed: `xr_to_mesh` crash on `dhdt_cpom` (3 locations).** The dH/dt
+diagnostic code (`mipkit['dhdt_cpom'].isel(cpom_dhdt_time=-1)` computed but then the
+UN-sliced 3D `mipkit` dataset passed to `xr_to_mesh` anyway) crashes with `"variable
+'dhdt_cpom' must be 2D on a rectilinear grid"` — `xr_to_mesh` requires 2D input, `dhdt_cpom`
+carries a `cpom_dhdt_time` dimension. This exact broken pattern existed in **three places**:
+`ais_0.1.py`'s final-chunk diagnostic (would have crashed chunk 4 right after the full
+24-year run finished — checkpoint save happens first, so no compute lost, just the
+diagnostic printout), `ais_0.1_SSA.py`'s `historical_dhdt_tuning_ssa`, and
+`check_historical_chunk1.py`. Fixed all three: wrap the already-sliced 2D field back into a
+one-variable Dataset (`mipkit[['dhdt_cpom']].isel(cpom_dhdt_time=-1)`) before passing it in,
+preserving `x1km`/`y1km` coords. Also reordered `historical_dhdt_tuning_ssa` to save its
+transient results *before* running the diagnostic (mirroring the HO chunked step's own
+save-then-diagnose ordering), so a future diagnostic-only crash there can't lose a completed
+run either.
 
 **Chunk 2 (job 179486058, t=2001→2007): submitted, running** (queued ~44h before starting —
 hugemem congestion has gotten noticeably worse than chunk 1's queue wait). Chunks 3
 (2007→2013) and 4 (2013→2019, final) to follow the same check-then-resubmit pattern; the
 shared `steps=['historical_dhdt_tuning']` toggle in `ais_0.1.py` stays set until the full
 run completes, then reverts to `['ho_friction_inv']`.
+
+## 4n. SSA `historical_dhdt_tuning_ssa`: found using the wrong (superseded) melt calibration
+
+First attempt (job 179492355) crashed immediately: `AttributeError: 'default' object has no
+attribute 'tf'`. Root cause: `melt_gamma_tuning_ssa`'s save/analyze branch reloads its best
+candidate straight from `AIS3_SSA_relaxed.nc` and only grafts on the `TransientSolution`
+results fetched via `load_only=True` — it never reapplies the ismip6 basalforcings
+config (`gamma_0`/`tf`/`delta_t`/`basin_id`) that was actually used to produce those
+results, since that config only ever existed on the `_copy.deepcopy` submitted separately
+and doesn't round-trip through `save_model`/`load_model`. So `AIS3_melt_gamma_tuning_ssa.nc`
+was saved with `basalforcings` still at its raw, unconfigured `default` type. Every other
+downstream consumer (`melt_deltaT_sensitivity_test_ssa.py`, `ssa_melt_deltaT_basin_refit.py`)
+never hit this because they reconstruct basalforcings from scratch themselves rather than
+trusting this file's saved config — `historical_dhdt_tuning_ssa` was the first to assume
+otherwise. **Fixed** in `ais_0.1_SSA.py`'s `melt_gamma_tuning_ssa` save branch: re-apply the
+full ismip6 config to the winning candidate before saving. Regenerated the file (job
+179494110) — succeeded, but revealed a second, more significant problem.
+
+**Second, deeper problem: that "best" candidate is the wrong config entirely.**
+`AIS3_melt_gamma_tuning_ssa.nc` only ever held `melt_gamma_tuning_ssa`'s own COARSE 9-point
+sweep pick (`gamma_0=5537.7`, published/unrefit `deltaT_basin`) — it was never updated after
+`ssa_melt_deltaT_basin_refit.py`'s per-basin secant refit chain converged on the actual
+accepted answer, `gamma_0=300` with a per-basin REFIT `deltaT_basin` (confirmed best-by-J2
+in `ssa_melt_deltaT_refit_recalibrate.py`, job 179305728, §4k). Neither refit script ever
+saved a full model file — they only tracked numeric state (`deltaT_refit_state_ssa.json`)
+and pulled raw melt-rate results via `load_only=True` against each candidate/round's own
+execution folder, never persisting a genuinely complete, self-consistent "final calibrated"
+model anywhere. Had this gone unnoticed, `historical_dhdt_tuning_ssa` would have produced a
+historical run using a known-superseded melt configuration.
+
+**Fix**: new script `finalize_ssa_melt_calibration.py` reconstructs the winning candidate's
+(i=1, `gamma_0=300`, `final_round=5`, converged=True) full ismip6 basalforcings config from
+`deltaT_refit_state_ssa.json`'s `history[-1]['delta_t']` (the refit per-basin array),
+mirroring `ssa_melt_deltaT_basin_refit.py`'s own `setup_base_model()` exactly, then pulls
+its already-completed solve (`AIS3_ssa_deltaT_refit_g1_r5`) via the same `load_only=True`
+technique and saves a genuinely complete model to `AIS3_melt_final_ssa.nc`. Ran successfully
+(job 179502636): `gamma_0=300.0`, `delta_t` range `[0.869, 12.259]`°C, floating melt rate
+0–13.945 m/yr (mean 0.270). Updated `historical_dhdt_tuning_ssa` to load
+`AIS3_melt_final_ssa.nc` instead of `AIS3_melt_gamma_tuning_ssa.nc`. Resubmitted (job
+179504719) — hit a third, unrelated bug (below).
+
+Job 179504719 crashed fast: `points_to_mesh` shape mismatch in the RACMO SMB loop — the
+exact same `smbgl` singleton-`height`-dimension bug already found and fixed on the HO
+track's identical code (§4l), just never ported over to `ais_0.1_SSA.py`'s own copy. Fixed
+with the same `.squeeze('height')` before `.to_numpy()`. Resubmitted (job 179562597).
+
+## 4o. HO chunk 2: warm-restart geometry inconsistency found and fixed
+
+Chunk 2's first real attempt (job 179486058) failed fast, before any solve: `"Model
+consistency error: base < bed on one or more vertices"`. Checkpoint from chunk 1 was
+untouched (the crash was in the pre-solve consistency check, before `save_model` would ever
+run again) — no compute or progress lost.
+
+Root cause: §4m's chunk-resume logic carried forward the raw solver-output
+`Surface`/`Base`/`MaskOceanLevelset` fields verbatim as the next chunk's initial condition.
+At vertices whose grounding state flipped during the chunk (484,350 went floating→grounded
+in chunk 1 alone, per the chunk-1 sanity check above), the solver's own output `Base` can
+still reflect the OLD floating-basis draft depth rather than snapping exactly to bed at the
+moment the vertex is reclassified as grounded — a self-consistency gap in ISSM's raw output
+itself, not safe to trust verbatim across a chunk boundary the way `Thickness` and
+`MaskOceanLevelset` are.
+
+**Fix**: still carry `Thickness` and `MaskOceanLevelset` forward as the real prognostic
+state, but RECOMPUTE `Base`/`Surface` from them via the same hydrostatic-floating/bed-
+grounded formula used throughout this pipeline (`restore_floored_thickness.py`'s
+`base = max(-H*rho_ice/rho_water, bed)` for floating, `base = bed` for grounded,
+`surface = base + H`), which guarantees `base >= bed` everywhere by construction rather than
+trusting solver output. Resubmitted chunk 2 (job 179562596) — **succeeded**: exit 0, "Chunk
+complete (t=2007.0 of 2019.0)", checkpoint saved.
+
+**SSA historical run also succeeded** (job 179562597, after the RACMO SMB fix above) — this
+one completes in a single shot (no chunking, SSA mesh is ~15x smaller and fits comfortably
+under `normal`'s walltime tiers). Saved to `AIS3_historical_1995_2019_SSA.nc`. **Official
+result: grounded dH/dt mismatch RMSE vs `dhdt_cpom` = 1.402 m/yr.** SSA track's historical
+validation is complete.
+
+## 4p. HO chunk 2's near-miss: `waitonlock` had almost no real margin
+
+Chunk 2's outer driver (job 179562596) used 19h49m of its 20h PBS walltime — cutting it
+extremely close. Traced to `md.settings.waitonlock = 60*15` (900 min): the "waiting for lock
+file" counter it bounds includes the inner solve job's PBS QUEUE wait, not just its actual
+compute time, and chunk 2 needed 899 of those 900 minutes to finish — one minute from the
+outer driver giving up on an inner job that was about to complete successfully. hugemem
+queue congestion has ranged from a few hours to ~44h across this session's chunks (§4m); 15h
+of combined queue-wait+compute margin doesn't cover that variance.
+
+**Fix**: bumped `waitonlock` to `60*40` (40h) and the launcher's own PBS walltime to 45h
+(still under the 48h/48-cpu hard ceiling from §4m), leaving ~5h for the outer's own
+setup/load-results/save-checkpoint overhead beyond the 40h wait budget. Chunk 3 (job
+179637209) had already been submitted with the old, tighter settings before this was caught
+— since it was still queued (zero compute sunk), cancelled and resubmitted (job 179637270)
+with the fixed walltime rather than risk a repeat or an outright failure.
+
+## 4q. SSA historical run: independent full validation (`check_historical_ssa.py`)
+
+Deeper sanity check of `AIS3_historical_1995_2019_SSA.nc` (job 179637343), mirroring
+`check_historical_chunk1.py`'s approach, adapted for SSA's 2D mesh and single-shot (not
+chunked) 24-year run. Confirms the production script's result independently rather than
+just trusting its inline printout.
+
+- **Field sanity**: clean — zero NaN/Inf across Thickness/Vel/Surface/Base, zero negative
+  thickness. All fields were actually present in `TransientSolution` despite
+  `historical_dhdt_tuning_ssa` never explicitly setting `requested_outputs` — ISSM's
+  defaults covered it here (unlike the HO chunked step, which does set it explicitly since
+  it needs specific fields to carry state across chunk boundaries).
+- **Grounding-line migration over the full 24 years**: 13,017 newly floating vs 40,128
+  newly grounded — same directional asymmetry as HO chunk 1 (§4m sanity check), proportionally
+  similar scale relative to SSA's ~1.59M-vertex mesh. Consistent with genuine
+  settling/adjustment near the grounding zone rather than something SSA-specific or a bug.
+- **dH distribution**: median exactly 0.00m over 24 years (remarkably stable), IQR -11.99 to
+  +14.85m. Tails still wide (p0=-1436.23m, p100=+864.78m) — matches the "quiet interior,
+  noisy coastal margin" pattern seen throughout this pipeline.
+- **dH/dt vs MIPKIT's `dhdt_cpom`, independently recomputed**: RMSE=1.402 m/yr, bias
+  (sim-obs)=+0.236 m/yr — matches the production script's inline result exactly.
+- **Spatial plot** (`historical_ssa_dH_spatial.png`): flat/white interior, speckled
+  red/blue coastal margin concentrated on West Antarctica and a few East Antarctic spots,
+  two standout strong-thickening hotspots (Antarctic Peninsula tip, one East Antarctic
+  coastal point). Same qualitative pattern as HO chunk 1's plot, just accumulated over the
+  full 24 years (mean|dH|=25.64m vs chunk 1's 16.71m over 6 years) — no runaway divergence,
+  a reassuring sign of stability over the full historical period.
+
+**SSA track's `historical_dhdt_tuning_ssa` is fully complete and independently verified.**
+RMSE=1.402 m/yr is a genuinely good result: SSA's simplified physics reproduces observed
+elevation-change rates to within 1.4 m/yr over a real 24-year forced transient, using a
+friction/melt calibration fit independently (to velocity and basal melt, never to dH/dt
+directly) — this is the out-of-sample validation this whole step exists to provide (see the
+step's own purpose, discussed in conversation: friction inversion matches a velocity
+snapshot, melt calibration matches basal melt rates, neither directly tests whether the
+model's *evolution over time* looks like reality; this does).

@@ -144,7 +144,7 @@
     <section class="intro" id="status">
       <div>
         <h2>Where the project stands</h2>
-        <p>The present-day state is no longer effectively static: the main initialization and inversion failures have been isolated, repaired, and tested. The current production state uses Schoof friction at 70.43 m/yr grounded RMSE and is verified converged in practice. A reproducible, fully converged Budd state reaches 98.9 m/yr, while a promising 60.4 m/yr Budd result still needs validation through the production pipeline. The September pipeline snapshot records active historical tuning, a paused HO friction continuation, and several first-run bugs now fixed.</p>
+        <p>The present-day state is no longer effectively static: the main initialization and inversion failures have been isolated, repaired, and tested. The current production state uses Schoof friction at 70.43 m/yr grounded RMSE and is verified converged in practice. A reproducible, fully converged Budd state reaches 98.9 m/yr, while a promising 60.4 m/yr Budd result still needs validation through the production pipeline. The latest pipeline update validates the SSA historical run at 1.402 m/yr dH/dt RMSE; the HO historical run continues through chunked warm restarts.</p>
       </div>
       <div class="snapshot"><strong>70.43 m/yr</strong><span>current production grounded RMSE<br>Schoof, converged in practice</span></div>
     </section>
@@ -152,7 +152,7 @@
     <section class="cards" aria-label="Current work status">
       <article class="card"><div class="label">Validated</div><h3>HO thermal spin-up</h3><p>Full higher-order thermal solve converged and produced <strong>AIS3_thermal_steadystate.nc</strong>, with post-solve temperature safeguards and rheology recomputation.</p></article>
       <article class="card active"><div class="label">Paused</div><h3>HO friction inversion</h3><p>Chunked continuation reached a stable checkpoint, but chunk 4 failed five times with two failure signatures. The continuation is paused pending a better diagnosis.</p></article>
-      <article class="card open"><div class="label">Pipeline active</div><h3>Calibration and history</h3><p>The naive melt RMSE calibration is invalid; the working route uses gamma_0=300 with basin refits. Historical tuning is running in six-year warm-restart chunks.</p></article>
+      <article class="card open"><div class="label">Validated + active</div><h3>Historical pipeline</h3><p>SSA historical tuning is complete at 1.402 m/yr dH/dt RMSE. The HO track is still running in six-year warm-restart chunks; the melt calibration is finalized at gamma_0=300 with basin refits.</p></article>
     </section>
 
     <section class="section" id="evidence">
@@ -161,7 +161,7 @@
         <div class="metric"><strong>9.01%</strong><span>of grounded vertices carry 90.6% of total squared error</span></div>
         <div class="metric"><strong>17×</strong><span>real spatial viscosity range restored from RACMO temperature</span></div>
         <div class="metric"><strong>25 / 25</strong><span>Budd sensitivity runs converged cleanly after the boundary-condition fix</span></div>
-        <div class="metric"><strong>1450–1500 GB</strong><span>empirical per-node hugemem ceiling on the target system</span></div>
+        <div class="metric"><strong>1.402 m/yr</strong><span>validated SSA historical dH/dt RMSE against MIPKIT</span></div>
       </div>
       <div class="table-wrap" style="margin-top: 22px">
         <table>
@@ -186,6 +186,7 @@
         <div class="step"><div class="step-no">02</div><div><h3>Rheology became spatially physical</h3><p>Uniform placeholder B was replaced with a RACMO surface-temperature-derived field. The temperature remains a proxy for depth-averaged rheology, but it restores the missing spatial variation.</p></div></div>
         <div class="step"><div class="step-no">03</div><div><h3>Grounding-line drag and front BCs were repaired</h3><p>The drag mask is vertex-based, and the floating calving front is cleared back to Neumann conditions after extraction. This avoids stripping drag from grounded ice and avoids an artificial velocity clamp at the front.</p></div></div>
         <div class="step"><div class="step-no">04</div><div><h3>The mountains exposed a geometry error</h3><p>Experiment scripts rebuilt the surface after applying a thickness floor, fabricating steep slopes and driving stress. Production now preserves the observed surface and absorbs the floor into the base.</p></div></div>
+        <div class="step"><div class="step-no">05</div><div><h3>Historical runs became restartable</h3><p>The HO historical run now advances in six-year warm-restart chunks, recomputes geometry to enforce base-above-bed consistency, and leaves extra wait-time margin for hugemem queue congestion. The SSA track is complete and validates at 1.402 m/yr dH/dt RMSE.</p></div></div>
       </div>
     </section>
 
@@ -197,9 +198,10 @@
           <tbody>
             <tr><td>1. Thermal spin-up</td><td><code>ho_thermal_steadystate</code></td><td>Validated</td><td><code>AIS3_thermal_steadystate.nc</code></td></tr>
             <tr><td>2. HO friction inversion</td><td><code>ho_friction_inv</code></td><td>Paused after repeated chunk-4 failures</td><td><code>AIS3_ho_friction_inv.nc</code></td></tr>
-            <tr><td>3. Melt calibration</td><td><code>melt_gamma_tuning</code></td><td>Working route established; naive RMSE invalid</td><td><code>gamma_0=300</code> with basin refits</td></tr>
+            <tr><td>3. Melt calibration</td><td><code>melt_gamma_tuning</code></td><td>Finalized; naive RMSE invalid</td><td><code>gamma_0=300</code> with basin refits</td></tr>
             <tr><td>4. Relaxation</td><td><code>ho_relaxation</code></td><td>Completed solve; output salvage/qualification required</td><td><code>AIS3_ho_relaxed.nc</code></td></tr>
-            <tr><td>5. Historical tuning</td><td><code>historical_dhdt_tuning</code></td><td>Active; chunk 1 complete, chunk 2 running</td><td><code>AIS3_historical_1995_2019.nc</code></td></tr>
+            <tr><td>5. Historical tuning (HO)</td><td><code>historical_dhdt_tuning</code></td><td>In progress; chunked warm restart</td><td><code>AIS3_historical_1995_2019.nc</code></td></tr>
+            <tr><td>5. Historical tuning (SSA)</td><td><code>historical_dhdt_tuning_ssa</code></td><td>Complete and validated</td><td><code>1.402 m/yr RMSE</code></td></tr>
             <tr><td>6. Future projections</td><td><code>projection_ssp</code></td><td>Scaffold</td><td><code>AIS3_projection_{gcm}_{scenario}.nc</code></td></tr>
           </tbody>
         </table>
