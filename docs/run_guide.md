@@ -36,7 +36,7 @@ The scripts select what to run in three different ways:
 | script | how the step is selected |
 |---|---|
 | `ais_0.1.py` (HO track + upstream SSA inversion) | `qsub -v AIS3_STEPS=<step>[,<step>] <launcher>` overrides the hard-coded `steps` list. `AIS3_HIST_TAG=<suffix>` renames the historical checkpoint and execution dir. |
-| `ais_0.1_SSA.py` (SSA track) | Edit `steps = [...]` near line 91 by hand, then `qsub launch_ais_0.1_SSA.pbs`. There is no env override. |
+| `ais_0.1_SSA.py` (SSA track) | Same `AIS3_STEPS` override as `ais_0.1.py`: `qsub -v AIS3_STEPS=<step> launch_ais_0.1_SSA.pbs`. Otherwise edit the `steps` list by hand. |
 | standalone scripts (melt calibration etc.) | Hand-edit the `PHASE = 'submit'/'analyze'` constants (or `ROUND`/`STEP`) at the top of the file before each `qsub`. `ho_stressbalance_tests.py` is the exception: it reads `PHASE` from the environment (`qsub -v PHASE=...`). |
 
 **Always use `AIS3_STEPS` for `ais_0.1.py`.** Don't edit the shared `steps` list while a job
@@ -59,12 +59,12 @@ printed its own step header with `qcat <new-jobid>` before reverting. Never grep
    HO TRACK (ais_0.1.py)                        SSA TRACK (ais_0.1_SSA.py)
    ho_thermal_steadystate -> AIS3_thermal_steadystate.nc     ssa_relaxation_budd -> AIS3_SSA_relaxed.nc
    ho_friction_inv (chunked) -> AIS3_ho_friction_inv.nc        (geometry deliberately NOT relaxed)
-   melt_gamma_tuning -> AIS3_melt_gamma_tuning.nc            melt_gamma_tuning_ssa + refit scripts
-     (validated gamma_0=300 + refit deltaT, thickness restored)  finalize_ssa_melt_calibration.py
-   ho_relaxation -> AIS3_ho_relaxed.nc                                 -> AIS3_melt_final_ssa.nc
+   melt_gamma_tuning -> AIS3_melt_gamma_tuning.nc            melt_gamma_tuning_ssa -> AIS3_melt_final_ssa.nc
+     (validated gamma_0=300 + refit deltaT, thickness restored)  (validated gamma_0=300 + refit deltaT)
+   ho_relaxation -> AIS3_ho_relaxed.nc
    historical_dhdt_tuning (4 chunks)                          historical_dhdt_tuning_ssa
         -> AIS3_historical_1995_2019{tag}.nc                     -> AIS3_historical_1995_2019_SSA.nc
-   projection_ssp (scaffold)                                  projection_ssp_ssa (scaffold)
+   projection_ssp (scaffold)                                  projection_ssp_ssa (chained 50-yr chunks to 2300)
 ```
 
 The SSA track starts its downstream steps from the **inverted** geometry, not the relaxed
@@ -218,23 +218,28 @@ already implements it.
 ## 6. SSA track (`ais_0.1_SSA.py`)
 
 The mesh is 1.59 M vertices (2D), so every inner job uses the plain `cluster` (48 cores /
-190 GB / `normal`). Workflow: edit `steps`, then `qsub launch_ais_0.1_SSA.pbs` (outer driver
+190 GB / `normal`). Workflow: `qsub -v AIS3_STEPS=<step> launch_ais_0.1_SSA.pbs` (outer driver
 on `normal`, 8 cpu, 190 GB, 25 h).
 
 | # | step or script | reads → writes | status |
 |---|---|---|---|
 | 1 | `ssa_inverted_solve_budd` | `AIS3_param.nc` + p=q=1 friction run → `AIS3_SSA_inverted.nc` (then `restore_floored_thickness_ssa.py`) | done |
 | 2 | `ssa_relaxation_budd` | → `AIS3_SSA_relaxed.nc` (20 yr, zero SMB and melt, about 9.5 h) | done; geometry not adopted, by design |
-| 3 | `melt_gamma_tuning_ssa` (9-point sweep, J1) | → `AIS3_melt_gamma_tuning_ssa.nc` | done, but this is the coarse pick (5537.7), **not** the one used downstream |
-| 4 | `melt_deltaT_sensitivity_test_ssa.py` (`PHASE`) | +1 °C slopes | done |
-| 5 | `ssa_melt_deltaT_basin_refit.py` (`ROUND`/`STEP`, as in HO) | `deltaT_refit_state_ssa.json`, `execution_SSA/AIS3_ssa_deltaT_refit_g{i}_r{N}` | done |
-| 6 | `ssa_melt_deltaT_refit_recalibrate.py` | J2 minimum at `gamma_0=300` | done |
-| 7 | `finalize_ssa_melt_calibration.py` | → `AIS3_melt_final_ssa.nc` | done |
-| 8 | `historical_dhdt_tuning_ssa` | `AIS3_melt_final_ssa.nc` → `AIS3_historical_1995_2019_SSA.nc` (one shot, about 6 h, about 530 SU) | done |
-| 9 | `projection_ssp_ssa` | TF/SMB interpolation smoke-tested (`test_ssa_projection_interp.py`). SMB anomaly method and elevation feedback still TODO | scaffold |
+| 3 | `melt_gamma_tuning_ssa` | `AIS3_SSA_relaxed.nc` → `AIS3_melt_final_ssa.nc` (`AIS3_MELT_TAG` suffix). Applies the hard-coded validated `gamma_0=300` + refit `deltaT`; no solve; refuses to overwrite | done (current file built by `finalize_ssa_melt_calibration.py`) |
+| 4 | `historical_dhdt_tuning_ssa` | `AIS3_melt_final_ssa.nc` → `AIS3_historical_1995_2019_SSA.nc` (one shot, about 6 h, about 530 SU) | done |
+| 5 | `projection_ssp_ssa` | historical end state → `AIS3_proj_ssa_<exp>`; chained 50-yr chunks to 2300 via `launch_projection_ssa.pbs`. See [`projection_experiments.md`](projection_experiments.md) | implemented 2026-09-29 |
 
-The historical step must read `AIS3_melt_final_ssa.nc`. `AIS3_melt_gamma_tuning_ssa.nc` holds
-the superseded calibration (§4n).
+Before 2026-09-29, `melt_gamma_tuning_ssa` ran a J1-only `gamma_0` sweep with the published
+`deltaT`. It wrote the superseded pick (5537.7) to `AIS3_melt_gamma_tuning_ssa.nc`, which is still
+on disk and must not be used (§4n). The validated values came from this chain. Only rerun it if
+you want to redo the calibration itself, then copy the new values into the step:
+
+| # | script | control | produces |
+|---|---|---|---|
+| 1 | `melt_gamma_sweep_ssa.py` | `qsub -v PHASE=submit` → `PHASE=analyze` | 9-member `gamma_0` ensemble at the published `deltaT`, `execution_SSA/AIS3_melt_gamma_tuning_ssa_g{0..8}`. Refuses if those dirs exist; archive them first with `mv -n` |
+| 2 | `melt_deltaT_sensitivity_test_ssa.py` | `PHASE` (hand-edited) | +1 °C run, compared against `g6` for the slopes |
+| 3 | `ssa_melt_deltaT_basin_refit.py` | `ROUND`/`STEP`, as in HO | round 0 bootstraps from `g0`–`g8`; `deltaT_refit_state_ssa.json`, `execution_SSA/AIS3_ssa_deltaT_refit_g{i}_r{N}` |
+| 4 | `ssa_melt_deltaT_refit_recalibrate.py` | — | J2 minimum at `gamma_0=300` |
 
 ## 7. Current state and next actions (2026-09-29)
 
@@ -249,7 +254,7 @@ the superseded calibration (§4n).
 2. Depending on that result, fix HO rheology or friction first (possibly by resuming chunk 4
    or re-inverting). Then graft `FrictionC` properly (§5.3). Then rerun
    `ho_relaxation` → historical with a new tag.
-3. Still open: the `projection_ssp` scaffolds, the HO `cf101/cf103/cf501` re-sweep, and
+3. Still open: the HO `projection_ssp` scaffold, the HO `cf101/cf103/cf501` re-sweep, and
    inversion log §7. That includes the Siple Coast trunk deficit and promoting Budd p=q=1
    through `ssa_friction_inv_reg_lcurve`.
 

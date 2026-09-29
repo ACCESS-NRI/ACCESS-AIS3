@@ -29,7 +29,7 @@ not the relaxed, geometry — by design, see the §4z correction):
 |---|---|---|---|
 | 1. Inversion + solve (Budd p=q=1) | `ssa_inverted_solve_budd` | **done**; thickness restored (§4k) | `AIS3_SSA_inverted.nc` |
 | 2. Relaxation (20 yr, zero SMB/melt) | `ssa_relaxation_budd` | **done**; not propagated downstream, by design | `AIS3_SSA_relaxed.nc` |
-| 3. Ocean melt calibration | `melt_gamma_tuning_ssa` + refit + `finalize_ssa_melt_calibration.py` | **calibrated**: gamma_0=300, refit deltaT (§4k, §4n) | `AIS3_melt_final_ssa.nc` |
+| 3. Ocean melt calibration | `melt_gamma_tuning_ssa` (now builds the validated calibration, §5d) | **calibrated**: gamma_0=300, refit deltaT (§4k, §4n) | `AIS3_melt_final_ssa.nc` |
 | 4. Historical run (1995–2019) | `historical_dhdt_tuning_ssa` | **done**: area-mean close to CPOM after a ~6-yr start-up transient; no interannual skill; misses the West Antarctic acceleration (§4q–§4t, §5b) | `AIS3_historical_1995_2019_SSA.nc` |
 | 5. Future projections | `projection_ssp_ssa` | scaffold; time-varying TF/SMB interpolation implemented and smoke-tested, not run. Uses absolute `acabf` from placeholder `SDBN1-8000m`; SMB anomaly method and elevation feedback still TODO | `AIS3_projection_ssa_{gcm}_{scenario}.nc` |
 
@@ -1646,4 +1646,23 @@ The calibration search itself stays in the standalone scripts (§4a–4c).
 Expected differences from the current file: no `TransientSolution` from finalize's 0.01-yr
 salvage run (nothing downstream reads it), and `mesh.z` synced (`ho_relaxation` syncs it
 anyway). Not yet verified by a rebuild-and-compare run.
+
+**SSA, same change.** `melt_gamma_tuning_ssa` in `ais_0.1_SSA.py` ran the J1-only sweep with
+the published `deltaT`, and saved its superseded pick (5537.7) to
+`AIS3_melt_gamma_tuning_ssa.nc`. It now builds `AIS3_melt_final_ssa.nc` directly, which is the
+file `historical_dhdt_tuning_ssa` and the projections read. The step:
+- loads `AIS3_SSA_relaxed.nc`, as the calibration and `finalize_ssa_melt_calibration.py` did
+- sets ismip6 with IMBIE2 basins, Zhou TF, `gamma_0=300` and the SSA refit `deltaT`
+  hard-coded from `deltaT_refit_state_ssa.json` candidate 1 (round 5)
+- does no thickness restore (already applied to `AIS3_SSA_inverted.nc`, §4k) and no solve
+- has the same overwrite refusal and `AIS3_MELT_TAG` as HO
+
+The old step's submit phase was also the first stage of the SSA calibration chain:
+`ssa_melt_deltaT_basin_refit.py` (round 0) and `melt_deltaT_sensitivity_test_ssa.py` read their
+starting melt from its runs, `execution_SSA/AIS3_melt_gamma_tuning_ssa_g{0..8}` (still on disk).
+The sweep has moved to a standalone script, `melt_gamma_sweep_ssa.py`
+(`qsub -v PHASE=submit|analyze launch_melt_gamma_sweep_ssa.pbs`). It uses the same model setup
+and the same run names, and refuses to submit if those dirs exist. Its analyze phase only prints
+basin totals and J1; nothing is saved. Neither the step nor the script has been run yet (user:
+a rebuild-and-compare is not needed for now).
 
