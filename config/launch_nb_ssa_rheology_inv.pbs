@@ -1,0 +1,19 @@
+#!/bin/bash
+#PBS -N nb_ssa_rheology_inv
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=01:00:00
+#PBS -l ncpus=8
+#PBS -l mem=190GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/launch_nb_ssa_rheology_inv.pbs.out
+#PBS -e /g/data/au88/jh7060/ACCESS-AIS3/config/launch_nb_ssa_rheology_inv.pbs.err
+
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/jupyter nbconvert \
+    --to notebook --execute \
+    --ExecutePreprocessor.kernel_name=pyissm \
+    --ExecutePreprocessor.timeout=3300 \
+    --output /g/data/au88/jh7060/ACCESS-AIS3/config/ais_0.1_ssa_rheology_inv.executed.ipynb \
+    /g/data/au88/jh7060/ACCESS-AIS3/config/ais_0.1_ssa_rheology_inv.ipynb

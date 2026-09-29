@@ -1,0 +1,14 @@
+#!/bin/bash
+#PBS -N grounded_suite
+#PBS -q express
+#PBS -P au88
+#PBS -l walltime=01:00:00
+#PBS -l mem=96GB
+#PBS -l ncpus=24
+#PBS -l storage=gdata/au88+gdata/vk83
+#PBS -l wd
+#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/grounded_control_weight_suite.out
+#PBS -j oe
+
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u \
+    /g/data/au88/jh7060/ACCESS-AIS3/config/run_grounded_control_weight_suite.py

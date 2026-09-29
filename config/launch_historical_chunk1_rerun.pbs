@@ -1,0 +1,24 @@
+#!/bin/bash
+# Reruns ONLY chunk 1 (1995->2001) of historical_dhdt_tuning into a separate file,
+# AIS3_historical_1995_2019_chunk1rerun.nc, keeping its full 0.1yr history so the start-up
+# transient can be examined. Submit once: a second submission would resume from that file
+# and run chunk 2.
+#PBS -N hist_chunk1_rerun
+#PBS -P au88
+#PBS -q hugemem
+#PBS -l walltime=45:00:00
+#PBS -l ncpus=48
+#PBS -l mem=1450GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -v AIS3_STEPS=historical_dhdt_tuning,AIS3_HIST_TAG=_chunk1rerun
+#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/launch_historical_chunk1_rerun.pbs.out
+#PBS -e /g/data/au88/jh7060/ACCESS-AIS3/config/launch_historical_chunk1_rerun.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+cd /g/data/au88/jh7060/ACCESS-AIS3/config
+echo "AIS3_STEPS=$AIS3_STEPS AIS3_HIST_TAG=$AIS3_HIST_TAG"
+if [ -e /g/data/au88/jh7060/ACCESS-AIS3/models/AIS3_historical_1995_2019_chunk1rerun.nc ]; then
+    echo "AIS3_historical_1995_2019_chunk1rerun.nc already exists -- refusing to run chunk 2."
+    exit 1
+fi
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u ais_0.1.py
