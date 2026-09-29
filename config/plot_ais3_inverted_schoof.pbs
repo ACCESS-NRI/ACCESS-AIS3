@@ -1,0 +1,13 @@
+#!/bin/bash
+#PBS -N plot_ais3_inverted
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=00:20:00
+#PBS -l ncpus=8
+#PBS -l mem=190GB
+#PBS -l storage=gdata/au88+gdata/vk83
+#PBS -l wd
+#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/plot_ais3_inverted_schoof.pbs.out
+#PBS -e /g/data/au88/jh7060/ACCESS-AIS3/config/plot_ais3_inverted_schoof.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u /g/data/au88/jh7060/ACCESS-AIS3/config/plot_ais3_inverted_schoof.py

@@ -1,0 +1,18 @@
+#!/bin/bash
+# One chunk of an SSA projection experiment; the chunk qsubs its successor itself.
+# Pick the experiment with -v, e.g.
+#   qsub -v AIS3_STEPS=projection_ssp_ssa,AIS3_PROJ_SCENARIO=ctrl -o logs/proj_ssa_ctrl_2019.out -e logs/proj_ssa_ctrl_2019.err launch_projection_ssa.pbs
+#   qsub -v AIS3_STEPS=projection_ssp_ssa,AIS3_PROJ_SCENARIO=ssp585,AIS3_PROJ_GCM=CESM2-WACCM ... launch_projection_ssa.pbs
+# Stop a chain after its current chunk: touch models/AIS3_proj_ssa_<exp>.STOP
+# Walltime: the 48-cpu inner solve (~10 h per 50 yr) plus its queue wait, under the 48 h cap.
+#PBS -N proj_ssa
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=46:00:00
+#PBS -l ncpus=8
+#PBS -l mem=190GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+cd /g/data/au88/jh7060/ACCESS-AIS3/config
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u ais_0.1_SSA.py
