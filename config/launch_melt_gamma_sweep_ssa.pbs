@@ -1,0 +1,16 @@
+#!/bin/bash
+# qsub -v PHASE=submit launch_melt_gamma_sweep_ssa.pbs   (then PHASE=analyze once the 9 solves finish)
+#PBS -N melt_gamma_sweep_ssa
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=03:00:00
+#PBS -l ncpus=8
+#PBS -l mem=190GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/launch_melt_gamma_sweep_ssa.pbs.out
+#PBS -e /g/data/au88/jh7060/ACCESS-AIS3/config/launch_melt_gamma_sweep_ssa.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+cd /g/data/au88/jh7060/ACCESS-AIS3/config
+echo "PHASE=$PHASE"
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u melt_gamma_sweep_ssa.py

@@ -27,13 +27,12 @@ Stage status (updated 2026-09-02):
      the best full-continental result in the project). AIS3_SSA_inverted.nc.
   2. ssa_relaxation_budd -- FULLY IMPLEMENTED AND RUN (mean |dH|=32.90m, max |dH|=1505.39m
      over the 20yr relaxation). AIS3_SSA_relaxed.nc.
-  3. melt_gamma_tuning_ssa -- RUN. Coarse 9-point gamma_0 sweep pick (AIS3_melt_gamma_tuning_
-     ssa.nc) was superseded by the per-basin deltaT_basin secant refit chain
-     (ssa_melt_deltaT_basin_refit.py / ssa_melt_deltaT_refit_recalibrate.py), which converged
-     on gamma_0=300 with a refit deltaT_basin -- the actual accepted calibration, reconstructed
-     as a genuinely complete model by finalize_ssa_melt_calibration.py -> AIS3_melt_final_ssa.nc
-     (2026-09-21, after historical_dhdt_tuning_ssa's first run revealed AIS3_melt_gamma_tuning_
-     ssa.nc itself was never updated with the refit result).
+  3. melt_gamma_tuning_ssa -- builds AIS3_melt_final_ssa.nc directly from the validated
+     calibration (gamma_0=300 + per-basin refit deltaT_basin, hard-coded; 2026-09-29). The
+     values come from the standalone refit chain (ssa_melt_deltaT_basin_refit.py /
+     ssa_melt_deltaT_refit_recalibrate.py). The existing AIS3_melt_final_ssa.nc was built by
+     finalize_ssa_melt_calibration.py. The step's old coarse gamma_0 sweep (pick 5537.7,
+     AIS3_melt_gamma_tuning_ssa.nc) was superseded by that refit and removed.
   4. historical_dhdt_tuning_ssa -- RUN AND VALIDATED. Full 1995-2019 (24yr) transient against
      AIS3_melt_final_ssa.nc, checked against MIPKIT's dhdt_cpom: grounded RMSE=1.402 m/yr,
      independently reconfirmed via check_historical_ssa.py. AIS3_historical_1995_2019_SSA.nc.
@@ -319,193 +318,98 @@ if 'ssa_relaxation_budd' in steps:
 
 
 ## ------------------------------------
-## Stage 3: Ocean melt (gamma) calibration, SSA mesh
+## Stage 3: Ocean basal melt -- apply the validated calibration, SSA mesh
 ## ------------------------------------
-# J1-only (basin-aggregated Gt/yr vs. Paolo/Adusumilli, official IMBIE2 basins) rather than
-# the HO track's full J1+J2+J3+Monte Carlo (config/melt_ismip7_calibration.py) -- J1 alone
-# already proved robust on HO (SS4b: basin-aggregated fitting was NOT gamed the way naive
-# per-vertex RMSE was), and this track is explicitly meant to be the cheap/simple one. No
-# vertical-layer projection needed here (unlike the HO track's on_base/x2d/elements2d
-# machinery) -- the SSA mesh IS the 2D mesh, md.mesh.x/y/elements are already what's needed.
-# KNOWN GAP, same as HO's initial pass: deltaT_basin held fixed at the published prior, not
-# re-derived per candidate gamma_0 -- HO's own experience (SS4c) showed this can matter a
-# lot; deferred here too, revisit if this track's melt calibration needs to be trusted in
-# detail rather than as a reasonable working value.
+# Builds AIS3_melt_final_ssa.nc (historical_dhdt_tuning_ssa's input) from the validated
+# ISMIP6 quadratic-local melt calibration: gamma_0 = 300 m/yr with per-basin refit
+# deltaT_basin, official IMBIE2 basins, Zhou thermal-forcing climatology (worklog 4k, 4n).
+# No solve: the melt parameterisation is evaluated inside the downstream transients.
+#
+# The calibration SEARCH is not rerun here. It is a multi-round chain of standalone scripts
+# (melt_gamma_sweep_ssa.py -> melt_deltaT_sensitivity_test_ssa.py -> ssa_melt_deltaT_basin_refit.py
+# -> ssa_melt_deltaT_refit_recalibrate.py; state in models/deltaT_refit_state_ssa.json), and this
+# step hard-codes its result. The J1-only gamma_0 sweep with fixed (published) deltaT_basin
+# this step used to run was removed: its pick (5537.7) is superseded once deltaT_basin is
+# refit per basin (J1 then ~0 for every candidate; J2 decides, worklog 4c).
+#
+# Loads AIS3_SSA_relaxed.nc as the calibration did; its geometry is the inverted (unrelaxed)
+# geometry, by design (worklog 4z correction). Thickness was already restored upstream in
+# AIS3_SSA_inverted.nc (restore_floored_thickness_ssa.py, worklog 4k).
+#
+# Refuses to overwrite an existing output: archive it first (mv -n) or set AIS3_MELT_TAG.
 if 'melt_gamma_tuning_ssa' in steps:
     print("-------------------------------------------------------------")
-    print(" OCEAN BASAL-MELT GAMMA CALIBRATION (SSA)")
+    print(" OCEAN BASAL-MELT CALIBRATION, SSA (VALIDATED: gamma_0=300, REFIT deltaT)")
     print("-------------------------------------------------------------")
 
     from scipy.interpolate import RegularGridInterpolator, NearestNDInterpolator
-    import pandas as pd
-    import copy as _copy
 
     ISMIP7_OCEAN = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/parameterisations/ocean'
     ZHOU_TF_FILE = ('/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/ocean/climatology/'
                      'zhou_annual_06_nov/tf/v3/tf_AIS_obs_ocean_climatology_zhou_annual_06_nov_v3_1972-2024.nc')
-    GAMMA0_FILE = '/g/data/au88/ismip6/2300/forcings/parameterizations/coeff_gamma0_DeltaT_quadratic_local_median.nc'
     BASIN_FILE = f'{ISMIP7_OCEAN}/imbie2/basin_numbers_ismip8km_v2.nc'
-    MELT_OBS_CSV = f'{ISMIP7_OCEAN}/meltobs/Melt_Paolo_Err_Adusumilli_imbie2_v3.csv'
     TIME_SENTINEL = 1e9
-    GAMMA0_VALUES = [100.0, 300.0, 1000.0, 3000.0, 5537.7, 8306.6, 11075.45, 15000.0, 25000.0]
+
+    # Validated values: candidate g1 of ssa_melt_deltaT_basin_refit.py (converged round 5, run
+    # AIS3_ssa_deltaT_refit_g1_r5), chosen by ssa_melt_deltaT_refit_recalibrate.py (job
+    # 179305728, J2 minimum). delta_t[k] belongs to IMBIE2 basin k+1. Close to, but not the
+    # same as, the HO track's refit values (different mesh).
+    MELT_GAMMA0 = 300.0
+    MELT_DELTA_T = np.array([
+        1.8467609040725819, 2.7988123113211087, 2.2562599573273427, 4.599712312498511,
+        8.762072283674417, 5.8733775833670565, 3.728768234826943, 0.8688693456218887,
+        7.1878933110812575, 12.258715419441897, 5.2128687613028335, 4.89285368124807,
+        2.3120433144628567, 3.4396433109318245, 1.2381000126240504, 2.2497361133862843])
+
+    out_path = f"{model_dir}/AIS3_melt_final_ssa{os.environ.get('AIS3_MELT_TAG', '')}.nc"
+    if save and os.path.exists(out_path):
+        raise FileExistsError(f"{out_path} exists -- archive it first (mv -n) or set AIS3_MELT_TAG")
 
     print("-- Loading relaxed SSA model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_SSA_relaxed.nc')
-    # BUGFIX (2026-09-02, found via a real OOM at 175.89GB/190GB after only 1 of 9 candidates
-    # submitted): AIS3_SSA_relaxed.nc carries its full 400-timestep transient history (Vel/
-    # Thickness/Surface/Base/MaskOceanLevelset x 400 steps x ~1.6M vertices) -- none of it is
-    # used below (only geometry/mask/mesh/materials at the relaxed endpoint matter for melt
-    # calibration), but it gets carried along and re-copy.deepcopy'd every submit-loop
-    # iteration, ballooning memory fast. Strip it once, right after loading.
-    md.results.TransientSolution = []
+    md.results.TransientSolution = []  # 400-step relaxation history, unused downstream (worklog 4g)
 
-    print("-- Configuring ISMIP6 basal melt parameterisation (OFFICIAL IMBIE2 basins)...")
+    print("-- Configuring ISMIP6 basal melt parameterisation (IMBIE2 basins)...")
     md.basalforcings = pyissm.model.classes.basalforcings.ismip6(md.basalforcings)
     ds_basin = xr.open_dataset(BASIN_FILE)
     basin_grid = ds_basin['basinNumber'].values
-    bx, by = ds_basin['x'].values, ds_basin['y'].values
+    bxx, byy = np.meshgrid(ds_basin['x'].values, ds_basin['y'].values)
     num_basins = int(np.nanmax(basin_grid)) + 1
-    print(f"   {num_basins} basins found in official IMBIE2 grid (expect 16)")
-
+    assert num_basins == MELT_DELTA_T.size, f"{num_basins} basins vs {MELT_DELTA_T.size} delta_t values"
+    # basin_id is per element: nearest basin at each element centroid (2D mesh, no projection).
     elx = np.asarray(md.mesh.elements).astype(int) - 1
     mesh_x = np.asarray(md.mesh.x).ravel()
     mesh_y = np.asarray(md.mesh.y).ravel()
     ecx = mesh_x[elx[:, :3]].mean(axis=1)
     ecy = mesh_y[elx[:, :3]].mean(axis=1)
-    bxx, byy = np.meshgrid(bx, by)
     basin_lookup = NearestNDInterpolator(np.column_stack([bxx.ravel(), byy.ravel()]), basin_grid.ravel())
-    basin_id_elements = (basin_lookup(np.column_stack([ecx, ecy])) + 1).astype(float)
-    md.basalforcings.basin_id = basin_id_elements  # per-element, no 3D projection needed on a 2D mesh
+    md.basalforcings.basin_id = (basin_lookup(np.column_stack([ecx, ecy])) + 1).astype(float)
     md.basalforcings.num_basins = num_basins
-
-    ds_gamma = xr.open_dataset(GAMMA0_FILE)
-    deltaT_grid = ds_gamma['deltaT_basin'].values
-    gx, gy = ds_gamma['x'].values, ds_gamma['y'].values
-    gxx, gyy = np.meshgrid(gx, gy)
-    dT_lookup = NearestNDInterpolator(np.column_stack([gxx.ravel(), gyy.ravel()]), deltaT_grid.ravel())
-    dT_at_basin_grid = dT_lookup(np.column_stack([bxx.ravel(), byy.ravel()])).reshape(basin_grid.shape)
-    delta_t_per_basin = np.array([
-        np.nanmean(dT_at_basin_grid[basin_grid == b]) if np.any(basin_grid == b) else 0.0
-        for b in range(num_basins)
-    ])
-    md.basalforcings.delta_t = np.nan_to_num(delta_t_per_basin, nan=0.0)
     md.basalforcings.islocal = 1
+    md.basalforcings.gamma_0 = MELT_GAMMA0
+    md.basalforcings.delta_t = MELT_DELTA_T.copy()
 
     print("-- Interpolating Zhou ocean thermal-forcing climatology onto the mesh...")
     ds_tf = xr.open_dataset(ZHOU_TF_FILE)
     tfx, tfy, tfz = ds_tf['x'].values, ds_tf['y'].values, ds_tf['z'].values
-    tf_full = ds_tf['tf'].values
+    tf_full = ds_tf['tf'].values  # (z, y, x)
     tf_list = []
     for k in range(tfz.size):
-        interp_k = RegularGridInterpolator((tfy, tfx), tf_full[k], method='linear',
-                                            bounds_error=False, fill_value=np.nan)
-        vals = interp_k(np.column_stack([mesh_y, mesh_x]))
-        vals = np.nan_to_num(vals, nan=0.0)
-        col = np.append(vals, TIME_SENTINEL)
-        tf_list.append(col.reshape(-1, 1))
+        vals = RegularGridInterpolator((tfy, tfx), tf_full[k], method='linear',
+                                        bounds_error=False, fill_value=np.nan)(np.column_stack([mesh_y, mesh_x]))
+        tf_list.append(np.append(np.nan_to_num(vals, nan=0.0), TIME_SENTINEL).reshape(-1, 1))
     md.basalforcings.tf = tf_list
     md.basalforcings.tf_depths = tfz.copy()
+    print(f"   {tfz.size} depth layers ({tfz.min():.0f} to {tfz.max():.0f} m)")
 
-    print("-- Assigning cluster and updating settings...")
+    # Forward-run settings the downstream transients inherit (they reset the rest themselves).
     md.inversion.iscontrol = 0
-    md.transient = pyissm.model.classes.transient.deactivate_all(md.transient)
-    md.transient.ismasstransport = 1
     md.masstransport.spcthickness = np.full(md.mesh.numberofvertices, np.nan)
     md.smb.mass_balance = np.zeros(md.mesh.numberofvertices)
-    md.timestepping.start_time = 0
-    md.timestepping.final_time = 0.01
-    md.timestepping.time_step = 0.01
-    md.transient.requested_outputs = ['default', 'BasalforcingsFloatingiceMeltingRate']
-    md.cluster = cluster  # plain 48c/190GB config -- SSA mesh, no hugemem needed
-    md.settings.waitonlock = 0
-
-    print("-- Loading J1 target (Paolo/Adusumilli basin-aggregated melt)...")
-    obs_df = pd.read_csv(MELT_OBS_CSV)
-    bmb_obs = obs_df['BMR (Gt/yr)'].values
-
-    elx_tri = np.asarray(md.mesh.elements).astype(int) - 1
-    tri_x, tri_y = mesh_x[elx_tri], mesh_y[elx_tri]
-    elem_area = 0.5 * np.abs((tri_x[:, 1] - tri_x[:, 0]) * (tri_y[:, 2] - tri_y[:, 0])
-                              - (tri_x[:, 2] - tri_x[:, 0]) * (tri_y[:, 1] - tri_y[:, 0]))
-    vertex_area = np.zeros(md.mesh.numberofvertices)
-    for c in range(3):
-        np.add.at(vertex_area, elx_tri[:, c], elem_area / 3.0)
-    counts = np.zeros(md.mesh.numberofvertices)
-    basin_id_vtx = np.zeros(md.mesh.numberofvertices)
-    for c in range(3):
-        np.add.at(basin_id_vtx, elx_tri[:, c], basin_id_elements - 1)
-        np.add.at(counts, elx_tri[:, c], 1)
-    basin_id_vtx = np.round(basin_id_vtx / np.maximum(counts, 1)).astype(int)
-    ol = np.asarray(md.mask.ocean_levelset).ravel()
-    floating = ol < 0
-    rho_ice = float(md.materials.rho_ice)
-
-    def basin_bmb(melt_myr):
-        mass_flux = melt_myr * rho_ice * vertex_area / 1e12
-        bmb = np.zeros(num_basins)
-        for b in range(num_basins):
-            mask = (basin_id_vtx == b) & floating
-            bmb[b] = np.nansum(mass_flux[mask])
-        return bmb
 
     if save:
-        print("-- Loading gamma_0 sweep results and comparing to Paolo/Adusumilli...")
-        best = None
-        for i, g0 in enumerate(GAMMA0_VALUES):
-            name = f'AIS3_melt_gamma_tuning_ssa_g{i}'
-            try:
-                mdi = pyissm.model.io.load_model(f'{model_dir}/AIS3_SSA_relaxed.nc')
-                mdi.results.TransientSolution = []  # same memory fix as the submit branch above
-                mdi.miscellaneous.name = name
-                mdi.cluster = cluster
-                mdi = pyissm.model.execute.solve(mdi, 'Transient', load_only=True, runtime_name=False)
-            except Exception as e:
-                print(f"   g{i} (gamma_0={g0:.1f}): FAILED to load ({e})")
-                continue
-            melt = np.asarray(mdi.results.TransientSolution[-1].BasalforcingsFloatingiceMeltingRate).ravel()
-            bmb = basin_bmb(melt)
-            J1 = np.nanmean(np.abs(bmb - bmb_obs))
-            print(f"   g{i} (gamma_0={g0:.1f}): total bmb={bmb.sum():.1f} Gt/yr "
-                  f"(target {bmb_obs.sum():.1f}), J1={J1:.3f}")
-            if best is None or J1 < best[1]:
-                best = (g0, J1, mdi)
-
-        if best is not None:
-            print(f"\nBest gamma_0 = {best[0]:.1f} m/yr (J1 = {best[1]:.3f})")
-            md_best = best[2]
-            # BUGFIX (2026-09-21, found via historical_dhdt_tuning_ssa crashing with
-            # "'default' object has no attribute 'tf'"): md_best above is a fresh reload of
-            # AIS3_SSA_relaxed.nc with only its TransientSolution results grafted on (via
-            # load_only=True) -- basalforcings was NEVER reconfigured back to the ismip6
-            # type/config actually used for the submitted run (that config only ever existed
-            # on the _copy.deepcopy submitted in the 'else' branch above, which doesn't
-            # round-trip through save_model/load_model here). Every OTHER downstream
-            # consumer (melt_deltaT_sensitivity_test_ssa.py, ssa_melt_deltaT_basin_refit.py)
-            # never hit this because they reconstruct basalforcings from scratch themselves
-            # rather than trusting this file's saved config -- historical_dhdt_tuning_ssa is
-            # the first to assume otherwise. Re-apply the same ismip6 configuration used for
-            # the submitted sweep, fixing gamma_0 to the winning candidate, so this saved
-            # file is actually self-consistent with the run it claims to represent.
-            md_best.basalforcings = pyissm.model.classes.basalforcings.ismip6(md_best.basalforcings)
-            md_best.basalforcings.basin_id = basin_id_elements
-            md_best.basalforcings.num_basins = num_basins
-            md_best.basalforcings.delta_t = np.nan_to_num(delta_t_per_basin, nan=0.0)
-            md_best.basalforcings.islocal = 1
-            md_best.basalforcings.tf = tf_list
-            md_best.basalforcings.tf_depths = tfz.copy()
-            md_best.basalforcings.gamma_0 = float(best[0])
-            print(f"Saving to {model_dir}/AIS3_melt_gamma_tuning_ssa.nc")
-            pyissm.model.io.save_model(md_best, f'{model_dir}/AIS3_melt_gamma_tuning_ssa.nc')
-        else:
-            print("   No sweep runs loaded successfully -- nothing to save.")
-    else:
-        print(f"-- Submitting gamma_0 sweep ({len(GAMMA0_VALUES)} runs)...")
-        for i, g0 in enumerate(GAMMA0_VALUES):
-            mdi = _copy.deepcopy(md)
-            mdi.basalforcings.gamma_0 = float(g0)
-            mdi.miscellaneous.name = f'AIS3_melt_gamma_tuning_ssa_g{i}'
-            print(f"   run g{i}: gamma_0={g0:.1f}")
-            pyissm.model.execute.solve(mdi, 'Transient', load_only=False, runtime_name=False)
+        print(f"Saving to {out_path}")
+        pyissm.model.io.save_model(md, out_path)
 
 
 ## ------------------------------------
