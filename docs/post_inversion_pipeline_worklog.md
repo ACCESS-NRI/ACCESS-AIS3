@@ -1666,3 +1666,18 @@ and the same run names, and refuses to submit if those dirs exist. Its analyze p
 basin totals and J1; nothing is saved. Neither the step nor the script has been run yet (user:
 a rebuild-and-compare is not needed for now).
 
+
+**5c: all three solves crashed identically -- not a node fault.** A (resubmitted, 180100939),
+B (180097005) and C (180097089) all exited 59 with SEGV on 40-45 of 96 ranks at the same point:
+the horizontal velocity solve completed (A after 9 min, since it starts from the relaxation's
+final velocities; C 43 min; B 60 min), then the run died in "computing basal mass balance ->
+ISMIP 6 Floating melting rate module -> ... computing vertical velocities". My earlier "node/MPI
+fault" reading of A's first crash was wrong. This is the first stress-balance-only solve with
+ismip6 basalforcings in this pipeline (every earlier ismip6 run was a Transient, which worked;
+the friction-inversion stress-balance solves had default basalforcings). Likely the ismip6
+time-dependent forcing is only fully set up inside a Transient -- not verified. ~580 SU lost.
+Workaround (melt only sets the basal vertical-velocity condition, not the horizontal speed being
+compared): `ho_stressbalance_tests.py` now uses the default basalforcings class with zero melt.
+Failed run dirs kept as execution/AIS3_ho_sbtest_*_segv, submit logs as
+launch_ho_stressbalance_tests_submit1.pbs.out/.err, state as ho_stressbalance_tests_state_segv1.json.
+Submit phase resubmitted: job 180107158.

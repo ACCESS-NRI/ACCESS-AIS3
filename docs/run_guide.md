@@ -13,15 +13,32 @@ Status is as of **2026-09-29**. The boundary-condition notes are in the root
 
 ## 1. Environment
 
+Paths below are relative to the repository root, `<repo>`. Placeholders: `<user>` is your NCI
+username, `<pyissm-env>` is a Python environment with pyissm installed.
+
 | item | value |
 |---|---|
-| Python | `/scratch/au88/jh7060/mamba/envs/pyissm/bin/python` (launchers `unset PYTHONPATH PYTHONSTARTUP PYTHONHOME` first) |
+| Python | `<pyissm-env>/bin/python` (launchers `unset PYTHONPATH PYTHONSTARTUP PYTHONHOME` first) |
 | ISSM build | `ISSM_DIR=/g/data/vk83/apps/spack/1.1/release/linux-x86_64/issm-git.2026.05.18_...` (set at the top of every script) |
 | cluster module | `access-issm_ad/2026.05.0`. The old `access-issm/2025.11.0` is stale and mismatched. |
 | PBS storage | `gdata/au88+gdata/vk83+gdata/av17` |
 | run directory | `config/`. Submit every launcher from here. |
 | model files | `models/` |
 | ISSM execution dirs | `execution/` (HO and upstream SSA), `execution_SSA/` (SSA track) |
+
+**Running as a different user or from a different checkout.** The scripts and launchers
+currently hard-code one user's paths. Before submitting anything, change these in the files
+you will run:
+- `cluster.login` (in `ais_0.1.py`, `ais_0.1_SSA.py` and each standalone script's `cluster`
+  block), set to `<user>`
+- the repository root in the path constants and `os.chdir(...)` calls: `model_dir`/`MODEL_DIR`,
+  `execution_dir`/`cluster.executionpath`, `domain_file`, `param_file`, `constrain_exp_file`
+- in each launcher: the `#PBS -o`/`-e` log paths, the `cd <repo>/config` line and the Python
+  path
+- `cluster.project`, `cluster.storage` and `#PBS -P`/`-l storage`, if you are not in project
+  `au88` or need other `gdata` areas
+
+`grep -rln <previous-username> config/` lists every file that still needs editing.
 
 ## 2. How a step runs
 
@@ -298,7 +315,7 @@ For validation, use the area-weighted, fixed-coverage, per-basin series instead:
 ## 10. Monitoring
 
 ```bash
-qstat -u jh7060                 # both outer and inner jobs
+qstat -u $USER                  # both outer and inner jobs
 qcat -o <jobid>                 # live stdout of a running job (ISSM writes .outlog only at exit)
 tail config/launch_<name>.pbs.out   # outer driver log (holds text from earlier runs too)
 ls execution/<run_name>/        # inner job files: .queue, .bin, .outlog/.errlog
