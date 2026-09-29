@@ -13,6 +13,96 @@ import copy
 from pathlib import Path
 
 
+def racmo_mean_smb(md, y0, y1):
+    """Time-mean RACMO2.4p1 smbgl over calendar years y0..y1 on md's mesh, in m ice eq/yr.
+
+    Same unit handling as historical_dhdt_tuning (monthly kg/m^2 summed, divided by rho_ice),
+    averaged over the years. Uses the module-level `catalog`.
+    """
+    data = catalog.load_dataset('racmo2.4p1_monthly_11km_1979-2023')
+    smbgl = data['smbgl']
+    rx, ry = pyissm.tools.general.ll_to_xy(data['lat'].values, data['lon'].values, -1)
+    sel = smbgl.sel(time=(smbgl['time.year'] >= y0) & (smbgl['time.year'] <= y1))
+    n_years = y1 - y0 + 1
+    assert sel.sizes['time'] == 12 * n_years, f"expected {12 * n_years} months, got {sel.sizes['time']}"
+    mean_myr = (sel.sum('time') / n_years / md.materials.rho_ice).squeeze('height').to_numpy()
+    out = pyissm.data.interp.points_to_mesh(rx, ry, mean_myr, md.mesh.x, md.mesh.y)
+    n_nan = int(np.isnan(out).sum())
+    print(f"   RACMO {y0}-{y1} mean SMB: mesh-mean {np.nanmean(out):.3f} m ice eq/yr, "
+          f"{n_nan} vertices outside RACMO coverage set to 0")
+    return np.nan_to_num(out, nan=0.0)
+
+
+def sync_mesh_z(md):
+    """Recompute the extruded mesh's vertex z from the current geometry (base + sigma*H).
+
+    Keeps each column's relative layer spacing (sigma from the existing z), so it works even if
+    md.mesh.z is stale -- e.g. after geometry was edited without touching z, as the thickness
+    restoration (restore_floored_thickness.py) and the historical chunk resume did.
+    """
+    nv = md.mesh.numberofvertices
+    nvb = int(md.mesh.numberofvertices2d)
+    n_layers = nv // nvb
+    assert n_layers * nvb == nv
+    assert np.asarray(md.mesh.vertexonbase).astype(bool).ravel()[:nvb].all()
+    assert np.asarray(md.mesh.vertexonsurface).astype(bool).ravel()[-nvb:].all()
+    z = np.asarray(md.mesh.z, dtype=float).ravel().reshape(n_layers, nvb)
+    span = z[-1] - z[0]
+    safe = np.abs(span) > 1e-9
+    sigma = np.where(safe[None, :], (z - z[0]) / np.where(safe, span, 1.0)[None, :],
+                     np.linspace(0.0, 1.0, n_layers)[:, None])
+    base = np.asarray(md.geometry.base, dtype=float).ravel()[:nvb]
+    thick = np.asarray(md.geometry.thickness, dtype=float).ravel()[:nvb]
+    d_base = np.abs(z[0] - base)
+    d_surf = np.abs(z[-1] - (base + thick))
+    print(f"   mesh.z vs geometry before sync: base max {d_base.max():.3f} m ({int((d_base > 0.01).sum())} "
+          f"columns off by >1 cm), surface max {d_surf.max():.3f} m ({int((d_surf > 0.01).sum())} columns)")
+    md.mesh.z = (base[None, :] + sigma * thick[None, :]).ravel()
+
+
+def adopt_final_state(md):
+    """Make the transient's last step the model's own state before save_model.
+
+    solve() fills md.results only, so without this save_model writes the transient's INPUT
+    geometry -- the reason neither relaxation ever reached downstream steps (worklog 4y).
+    Carries Thickness and MaskOceanLevelset; base/surface are recomputed from them with the
+    hydrostatic-floating/bed-grounded formula (raw output Base can sit below bed at newly
+    grounded vertices, worklog 4o); velocities go to md.initialization when saved.
+    """
+    ts = md.results.TransientSolution
+    nv = md.mesh.numberofvertices
+
+    def last(field):
+        if isinstance(ts, list):
+            return np.asarray(getattr(ts[-1], field), dtype=float).ravel().copy()
+        raw = np.asarray(getattr(ts, field), dtype=float).ravel()
+        return raw.reshape(raw.size // nv, nv)[-1].copy()
+
+    thick = last('Thickness')
+    ol = last('MaskOceanLevelset')
+    bed = np.asarray(md.geometry.bed, dtype=float).ravel()
+    ri = float(md.materials.rho_ice)
+    rw = float(md.materials.rho_water)
+    base = np.maximum(np.where(ol >= 0, bed, -thick * ri / rw), bed)
+    old_thick = np.asarray(md.geometry.thickness, dtype=float).ravel()
+    old_ol = np.asarray(md.mask.ocean_levelset, dtype=float).ravel()
+    md.geometry.thickness = thick
+    md.geometry.base = base
+    md.geometry.surface = base + thick
+    md.mask.ocean_levelset = ol
+    set_vel = []
+    for field in ('Vx', 'Vy', 'Vz', 'Vel'):
+        try:
+            setattr(md.initialization, field.lower(), last(field))
+            set_vel.append(field)
+        except (AttributeError, ValueError):
+            pass
+    d = thick - old_thick
+    print(f"   adopted final transient state: mean|dH| {np.abs(d).mean():.3f} m, max|dH| "
+          f"{np.abs(d).max():.2f} m; grounded/floating changed at "
+          f"{100 * np.mean((ol >= 0) != (old_ol >= 0)):.3f}% of vertices; initialization set: {set_vel}")
+
+
 def friction_law_info(md):
     """Return (control_parameter, field_attr, min_bound, max_bound) for md's friction law.
 
@@ -187,7 +277,14 @@ all_steps = [
 # steps = ['param']
 # steps = ['ssa_inverted_solve']
 # steps = ['ssa_relaxation']
-steps = ['historical_dhdt_tuning']
+steps = ['ho_friction_inv']
+# Per-job override via `qsub -v AIS3_STEPS=a,b` -- lets a launcher pick its step without editing
+# the shared `steps` above and holding that edit through a multi-day hugemem queue wait.
+if os.environ.get('AIS3_STEPS'):
+    steps = os.environ['AIS3_STEPS'].split(',')
+# Suffix for historical_dhdt_tuning's checkpoint file and execution name, so a rerun
+# (e.g. AIS3_HIST_TAG=_chunk1rerun) cannot overwrite the finished AIS3_historical_1995_2019.nc.
+HIST_TAG = os.environ.get('AIS3_HIST_TAG', '')
 # steps = ['ssa_friction_inv_lcurve']
 # steps = ['ssa_friction_inv_sensit']
 
@@ -2147,230 +2244,127 @@ if 'ho_friction_inv' in steps:
 
 
 ## ------------------------------------
-## Stage 3 (SCAFFOLD): Ocean basal-melt gamma calibration
+## Stage 3: Ocean basal melt -- apply the validated calibration
 ## ------------------------------------
-# Data plan (see plan doc for the full survey): ocean thermal forcing from the Zhou et
-# al. observational climatology (real observed conditions, not a CMIP scenario --
-# /g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/ocean/climatology/zhou_annual_06_nov/
-# tf/v3/tf_AIS_obs_ocean_climatology_zhou_annual_06_nov_v3_1972-2024.nc, tf(z,y,x), 8km
-# horizontal / 60m vertical, 30 levels -30 to -1770m, static). gamma_0 seeded from the
-# published ISMIP6 coefficient
-# (/g/data/au88/ismip6/2300/forcings/parameterizations/coeff_gamma0_DeltaT_quadratic_local_median.nc,
-# gamma0=11075.45 m/yr, deltaT_basin on the same 8km grid, 16 distinct basin values) as an
-# informed prior, then fine-tuned against ccdtools's
-# measures_its_live_antarctic_quarterly_ice_shelf_height_change 'melt' field (1992-2017
-# observed basal melt rates).
+# Builds AIS3_melt_gamma_tuning.nc (ho_relaxation's input) from the validated ISMIP6
+# quadratic-local melt calibration: gamma_0 = 300 m/yr with per-basin refit deltaT_basin,
+# official IMBIE2 basins, Zhou thermal-forcing climatology (worklog 4a-4c). No solve: the
+# melt parameterisation is evaluated inside the downstream transients.
+#
+# The calibration SEARCH is not rerun here. It is a multi-round chain of standalone scripts
+# (melt_ismip7_calibration.py -> melt_deltaT_sensitivity_test.py -> melt_deltaT_basin_refit.py
+# -> melt_deltaT_refit_recalibrate.py; state in models/deltaT_refit_state.json), and this
+# step hard-codes its result. The per-vertex RMSE-vs-ITS_LIVE gamma_0 sweep this step used to
+# run was removed: that metric is minimised by turning melt off almost everywhere (worklog 4b).
+#
+# Also restores real thickness where ssa_inverted_solve's 100 m floor is still baked into the
+# geometry (worklog 4i; previously restore_floored_thickness.py, run after the fact).
+#
+# Friction: md.friction.C is kept as loaded from AIS3_ho_friction_inv.nc, which is the field
+# chunk 3 STARTED from (chunk 2's output), not results.StressbalanceSolution.FrictionC (worklog
+# 5c). This reproduces the file the current HO runs used; decide the friction source once the
+# 5c stress-balance tests are in.
+#
+# Refuses to overwrite an existing output: archive it first (mv -n) or set AIS3_MELT_TAG.
 if 'melt_gamma_tuning' in steps:
 
     print("-------------------------------------------------------------")
-    print(f" OCEAN BASAL-MELT GAMMA CALIBRATION"                          )
+    print(f" OCEAN BASAL-MELT CALIBRATION (VALIDATED: gamma_0=300, REFIT deltaT)")
     print("-------------------------------------------------------------")
 
     from scipy.interpolate import RegularGridInterpolator, NearestNDInterpolator
 
+    ISMIP7_OCEAN = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/parameterisations/ocean'
+    BASIN_FILE = f'{ISMIP7_OCEAN}/imbie2/basin_numbers_ismip8km_v2.nc'
     ZHOU_TF_FILE = ('/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/ocean/climatology/'
                      'zhou_annual_06_nov/tf/v3/tf_AIS_obs_ocean_climatology_zhou_annual_06_nov_v3_1972-2024.nc')
-    GAMMA0_FILE = ('/g/data/au88/ismip6/2300/forcings/parameterizations/'
-                    'coeff_gamma0_DeltaT_quadratic_local_median.nc')
     TIME_SENTINEL = 1e9  # ISSM timeseries convention for a constant (non-time-varying) field
+    FLOOR_TOLERANCE = 0.5  # m, identifies vertices sitting at the 100 m thickness floor
+
+    # Validated values: candidate g1 of melt_deltaT_basin_refit.py (converged round 5, run
+    # AIS3_deltaT_refit_g1_r5), chosen by melt_deltaT_refit_recalibrate.py (J2 minimum; J1+J2
+    # Monte Carlo 5th/50th/95th percentile all 300). delta_t[k] belongs to IMBIE2 basin k+1.
+    MELT_GAMMA0 = 300.0
+    MELT_DELTA_T = np.array([
+        1.846780953928, 2.798224971871375, 2.256190194172076, 4.6025673763394686,
+        8.762019817950312, 5.874472507400691, 3.7266944940527127, 0.8694375267133155,
+        7.187221144505201, 12.257287349526834, 5.212055474978047, 4.872359182521575,
+        2.31606753790678, 3.5290865182230666, 1.23810199931132, 2.250648089251672])
+
+    out_path = f"{model_dir}/AIS3_melt_gamma_tuning{os.environ.get('AIS3_MELT_TAG', '')}.nc"
+    if save and os.path.exists(out_path):
+        raise FileExistsError(f"{out_path} exists -- archive it first (mv -n) or set AIS3_MELT_TAG")
 
     print(f"-- Loading HO friction-inverted model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_friction_inv.nc')
 
-    print(f"-- Configuring ISMIP6 basal melt parameterisation...")
+    print(f"-- Restoring real thickness at the 100 m floor (from AIS3_param.nc)...")
+    md_param = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
+    # Nearest (x,y) lookup: AIS3_param.nc is the 2D mesh, and thickness is columnar.
+    real_H = NearestNDInterpolator(
+        np.column_stack([np.asarray(md_param.mesh.x).ravel(), np.asarray(md_param.mesh.y).ravel()]),
+        np.asarray(md_param.geometry.thickness).ravel())(
+        np.column_stack([np.asarray(md.mesh.x).ravel(), np.asarray(md.mesh.y).ravel()]))
+    del md_param
+    H = np.asarray(md.geometry.thickness, dtype=float).ravel().copy()
+    floored = np.abs(H - 100.0) < FLOOR_TOLERANCE
+    H[floored] = np.maximum(real_H[floored], 1.0)
+    ri = float(md.materials.rho_ice)
+    rw = float(md.materials.rho_water)
+    ol = np.asarray(md.mask.ocean_levelset).ravel()
+    bed = np.asarray(md.geometry.bed, dtype=float).ravel()
+    base = np.asarray(md.geometry.base, dtype=float).ravel().copy()
+    base[floored] = np.where(ol[floored] < 0, np.maximum(-H[floored] * ri / rw, bed[floored]), bed[floored])
+    md.geometry.thickness = H
+    md.geometry.base = base
+    md.geometry.surface = np.where(floored, base + H, np.asarray(md.geometry.surface, dtype=float).ravel())
+    print(f"   {int(floored.sum())} vertices ({100 * floored.mean():.2f}%) restored: "
+          f"min {H[floored].min():.2f}, mean {H[floored].mean():.2f}, max {H[floored].max():.2f} m")
+    sync_mesh_z(md)
+
+    print(f"-- Configuring ISMIP6 basal melt parameterisation (IMBIE2 basins)...")
     md.basalforcings = pyissm.model.classes.basalforcings.ismip6(md.basalforcings)
-
-    print(f"-- Loading published gamma0/deltaT_basin (informed prior, {GAMMA0_FILE})...")
-    ds_gamma = xr.open_dataset(GAMMA0_FILE)
-    gamma0_prior = float(ds_gamma['gamma0'].values)
-    deltaT_grid = ds_gamma['deltaT_basin'].values      # (y, x), 16 distinct values
-    gx, gy = ds_gamma['x'].values, ds_gamma['y'].values
-    print(f"   gamma0 prior = {gamma0_prior:.2f} m/yr")
-
-    print(f"-- Deriving basin_id from deltaT_basin (avoids the Mouginot-vs-Rignot basin-set")
-    print(f"   compatibility question entirely: basin_id and delta_t both come from the SAME")
-    print(f"   file/grid the published gamma0 was calibrated against, self-consistent by")
-    print(f"   construction, rather than trying to remap MIPKIT's mouginot_basins onto it)...")
-    basin_vals = np.unique(deltaT_grid[np.isfinite(deltaT_grid)])
-    num_basins = int(basin_vals.size)
-    print(f"   {num_basins} basins found (expect 16)")
-    basin_id_grid = np.searchsorted(basin_vals, deltaT_grid) + 1  # 1-indexed basin IDs
-    delta_t_per_basin = basin_vals.copy()   # delta_t[k] corresponds to basin k+1
-
-    # basin_id is per-ELEMENT (pyISSM basalforcings.ismip6 docstring); nearest-neighbour
-    # lookup on element centroids against the 8km ocean grid.
-    # CONFIRMED (2026-08-30, read Model.py:815-818 directly rather than guessing): extrude()
-    # unconditionally sets mesh.x2d/y2d/elements2d/numberofelements2d from the pre-extrusion
-    # 2D mesh -- these attributes are always present on an extruded model, the hasattr
-    # fallback below never actually triggers for AIS3_ho_friction_inv.nc.
-    elx = np.asarray(md.mesh.elements2d if hasattr(md.mesh, 'elements2d') else md.mesh.elements).astype(int) - 1
-    vx2d = np.asarray(md.mesh.x2d if hasattr(md.mesh, 'x2d') else md.mesh.x).ravel()
-    vy2d = np.asarray(md.mesh.y2d if hasattr(md.mesh, 'y2d') else md.mesh.y).ravel()
-    if elx.shape[1] >= 3:
-        ecx = vx2d[elx[:, :3]].mean(axis=1)
-        ecy = vy2d[elx[:, :3]].mean(axis=1)
-    gxx, gyy = np.meshgrid(gx, gy)
-    basin_lookup = NearestNDInterpolator(np.column_stack([gxx.ravel(), gyy.ravel()]), basin_id_grid.ravel())
-    basin_id_2d = basin_lookup(np.column_stack([ecx, ecy])).astype(float)
-    # BUGFIX (2026-08-31, found via a real consistency-check failure): basin_id is
-    # per-2D-element (3,173,063 for this mesh) but ISSM expects it per-3D-element
-    # (44,422,882 = numberofelements2d x 14 vertical element layers) -- basin identity is
-    # horizontal-only, so replicate it uniformly up every column via the project's own
-    # established 2D->3D utility (same one used elsewhere for vertex fields), rather than
-    # leaving it at the 2D element count.
+    ds_basin = xr.open_dataset(BASIN_FILE)
+    basin_grid = ds_basin['basinNumber'].values
+    bxx, byy = np.meshgrid(ds_basin['x'].values, ds_basin['y'].values)
+    num_basins = int(np.nanmax(basin_grid)) + 1
+    assert num_basins == MELT_DELTA_T.size, f"{num_basins} basins vs {MELT_DELTA_T.size} delta_t values"
+    # basin_id is per element: nearest basin at each 2D element centroid, replicated up the columns.
+    elx = np.asarray(md.mesh.elements2d).astype(int) - 1
+    vx2d = np.asarray(md.mesh.x2d).ravel()
+    vy2d = np.asarray(md.mesh.y2d).ravel()
+    ecx = vx2d[elx[:, :3]].mean(axis=1)
+    ecy = vy2d[elx[:, :3]].mean(axis=1)
+    basin_lookup = NearestNDInterpolator(np.column_stack([bxx.ravel(), byy.ravel()]), basin_grid.ravel())
+    basin_id_2d = (basin_lookup(np.column_stack([ecx, ecy])) + 1).astype(float)
     md.basalforcings.basin_id = pyissm.model.mesh._project_3d(md, vector=basin_id_2d, type='element', layer=0)
     md.basalforcings.num_basins = num_basins
-    md.basalforcings.delta_t = delta_t_per_basin
-    md.basalforcings.islocal = 1  # local quadratic parameterisation, matching the gamma0 prior source
+    md.basalforcings.islocal = 1
+    md.basalforcings.gamma_0 = MELT_GAMMA0
+    md.basalforcings.delta_t = MELT_DELTA_T.copy()
 
-    print(f"-- Loading Zhou ocean thermal-forcing climatology and interpolating onto the mesh...")
+    print(f"-- Interpolating Zhou ocean thermal-forcing climatology onto the mesh...")
     ds_tf = xr.open_dataset(ZHOU_TF_FILE)
     tfx, tfy, tfz = ds_tf['x'].values, ds_tf['y'].values, ds_tf['z'].values
     tf_full = ds_tf['tf'].values  # (z, y, x)
-    nv = md.mesh.numberofvertices
-    mesh_x = np.asarray(md.mesh.x).ravel()
-    mesh_y = np.asarray(md.mesh.y).ravel()
+    mesh_xy = np.column_stack([np.asarray(md.mesh.y).ravel(), np.asarray(md.mesh.x).ravel()])
     tf_list = []
     for k in range(tfz.size):
-        interp_k = RegularGridInterpolator((tfy, tfx), tf_full[k], method='linear',
-                                            bounds_error=False, fill_value=np.nan)
-        vals = interp_k(np.column_stack([mesh_y, mesh_x]))
-        vals = np.nan_to_num(vals, nan=0.0)  # 0 degC TF outside the ocean grid (grounded interior)
-        col = np.append(vals, TIME_SENTINEL)
-        tf_list.append(col.reshape(-1, 1))
+        vals = RegularGridInterpolator((tfy, tfx), tf_full[k], method='linear',
+                                        bounds_error=False, fill_value=np.nan)(mesh_xy)
+        tf_list.append(np.append(np.nan_to_num(vals, nan=0.0), TIME_SENTINEL).reshape(-1, 1))
     md.basalforcings.tf = tf_list
     md.basalforcings.tf_depths = tfz.copy()
-    print(f"   {tfz.size} depth layers ({tfz.min():.0f} to {tfz.max():.0f} m), interpolated onto {nv} mesh vertices")
+    print(f"   {tfz.size} depth layers ({tfz.min():.0f} to {tfz.max():.0f} m)")
 
-    print(f"-- Loading ITS_LIVE observed ice-shelf melt rate (calibration target)...")
-    catalog = ccdtools.catalog.DataCatalog()
-    melt_obs_ds = catalog.load_dataset('measures_its_live_antarctic_quarterly_ice_shelf_height_change')
-    # BUGFIX (2026-08-30, checked the actual file directly rather than trusting the plan
-    # doc's survey): 'melt' is TIME-VARYING (dims ('time','y','x'), quarterly 1992-2017,
-    # units m/yr) -- passing it straight to xr_to_mesh (which assumes a 2D (y,x) rectilinear
-    # grid) would have been a shape mismatch or silently wrong. Use 'melt_mean' instead --
-    # the file already provides a pre-computed time-mean field, dims ('y','x'), exactly the
-    # steady-state calibration target this stage needs (coordinate names 'x'/'y' confirmed
-    # to match xr_to_mesh's defaults).
-    melt_obs_on_mesh = pyissm.data.interp.xr_to_mesh(melt_obs_ds, 'melt_mean', md.mesh.x, md.mesh.y)
-
-    print(f"-- Assigning cluster and updating settings...")
-    md.miscellaneous.name = 'AIS3_melt_gamma_tuning'
-    # BUGFIX (2026-08-30): this step operates on AIS3_ho_friction_inv.nc, the same
-    # ~23.8M-node full-continental HO mesh that OOM'd ho_thermal_steadystate outright at the
-    # shared cluster's default 190GB/normal-queue config (see that step's own history) --
-    # applying the same hugemem override proactively rather than waiting to rediscover the
-    # same failure. This step doesn't run the expensive stress-balance/adjoint solve (only
-    # masstransport, per below), so it's likely lighter than the friction inversion's own
-    # 96-core/2900GB hugemem config -- mirrored here anyway since it's the closest already-
-    # validated forward-solve config at this exact mesh scale; revisit down if this proves
-    # oversized once actually run.
-    md.cluster = pyissm.model.classes.cluster.gadi()
-    md.cluster.codepath = cluster.codepath
-    md.cluster.executionpath = cluster.executionpath
-    md.cluster.storage = cluster.storage
-    md.cluster.moduleuse = cluster.moduleuse
-    md.cluster.moduleload = cluster.moduleload
-    md.cluster.login = cluster.login
-    md.cluster.project = cluster.project
-    md.cluster.queue = 'hugemem'
-    md.cluster.np = 96
-    md.cluster.memory = 1450 * 2
-    md.cluster.time = 60 * 24
-    md.settings.waitonlock = 0
-
-    # BUGFIX (2026-08-31): AIS3_ho_friction_inv.nc still carries its own m1qn3 control
-    # inversion config (iscontrol=1, cost_functions=[101,103,501]) from ho_friction_inv --
-    # never reset here, unlike ho_relaxation/historical_dhdt_tuning which explicitly clear
-    # it before their own forward-only solves. Left set, marshalling crashed
-    # (KeyError: '101' in class_utils.marshall_inversion_cost_functions) trying to
-    # serialize a stale control config this step never needs -- this is a plain forward
-    # calibration sweep, not a control inversion.
+    # Forward-run settings the downstream transients inherit (they reset the rest themselves).
     md.inversion.iscontrol = 0
-
-    md.transient = pyissm.model.classes.transient.deactivate_all(md.transient)
-    md.transient.ismasstransport = 1   # melt only enters the solve as a masstransport BC flux
-    # BUGFIX (2026-08-31): masstransport.spcthickness defaults to a bare scalar NaN, not a
-    # properly-shaped per-vertex array (pyissm/model/classes/masstransport.py:62) -- the
-    # exact same bug already found and fixed in ssa_relaxation ("invalid timeseries row
-    # count" there too) when ismasstransport was first enabled on the SSA mesh. This is the
-    # first HO/3D-mesh step to ever enable ismasstransport, so it was never caught on this
-    # mesh lineage until now. NaN still means "no constraint" per that class's convention;
-    # just needs the right shape.
     md.masstransport.spcthickness = np.full(md.mesh.numberofvertices, np.nan)
-    # BUGFIX (2026-08-31, found via a real 4-of-5-sweep-jobs crash): masstransport reads
-    # md.smb.mass_balance as an input even with issmb=0 -- AIS3_ho_friction_inv.nc never had
-    # it populated (ais_0.1_param.py never sets it; same gap ssa_relaxation already
-    # documented and fixed with a zero placeholder for its own short diagnostic run). Zero
-    # SMB is a defensible placeholder here too: this solve's whole purpose is evaluating the
-    # basalforcings melt flux, not simulating real surface mass balance.
     md.smb.mass_balance = np.zeros(md.mesh.numberofvertices)
-    md.timestepping.start_time = 0
-    md.timestepping.final_time = 0.01  # yr -- deliberately tiny: evaluate melt, don't evolve geometry
-    md.timestepping.time_step = 0.01
-    md.transient.requested_outputs = ['default', 'BasalforcingsFloatingiceMeltingRate']
-
-    print(f"-- Setting-up gamma_0 sweep grid (published prior +/- a validation range)...")
-    # build_parameter_grid is generic (just a dict->DataFrame cartesian-product builder, see
-    # pyissm/inversion/sensitivity.py) and reusable here even though the rest of that module
-    # (assign_cost_functions/parameter_sensitivity) is hardcoded to inversion cost functions
-    # and a Stressbalance solve -- neither applies to a scalar basalforcings field, so the
-    # actual submit/compare loop below is hand-written rather than reusing those.
-    # EXTENDED LOWER RANGE (2026-08-31): the original {0.5,0.75,1.0,1.25,1.5}x sweep found
-    # melt RMSE monotonically INCREASING with gamma_0 across the whole range (12.60 -> 19.53
-    # m/yr), with the best point sitting right at the low edge (0.5x) -- the sweep never
-    # bracketed a minimum, so 0.5x was only "best of five points on a still-falling line",
-    # not a validated optimum. Extending well below 0.5x to actually find where RMSE turns
-    # over (or confirm it doesn't, which would itself be informative -- see the note in
-    # this session's conversation about RMSE->0 as gamma_0->0 potentially just reflecting
-    # most of the domain having near-zero true melt, not a physically meaningful optimum).
-    gamma_grid = pyissm.inversion.sensitivity.build_parameter_grid(
-        {0: [gamma0_prior * f for f in (0.05, 0.1, 0.15, 0.2, 0.3, 0.4)]})
 
     if save:
-        print(f"-- Loading melt calibration sweep results and comparing to observations...")
-        best = None
-        for _, row in gamma_grid.iterrows():
-            gname = f"AIS3_melt_gamma_tuning_g{row['run_id']}"
-            mdi = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_friction_inv.nc')  # cheap reload for field shapes
-            mdi.miscellaneous.name = gname
-            mdi.cluster = md.cluster
-            try:
-                mdi = pyissm.model.execute.solve(mdi, 'Transient', load_only = True, runtime_name = False)
-            except Exception as e:
-                print(f"   run {row['run_id']} (gamma_0={row['cf0']:.1f}): FAILED to load ({e})")
-                continue
-            melt_sim = np.asarray(mdi.results.TransientSolution[-1].BasalforcingsFloatingiceMeltingRate).ravel()
-            floating = np.asarray(mdi.mask.ocean_levelset).ravel() < 0
-            rmse = np.sqrt(np.nanmean((melt_sim[floating] - melt_obs_on_mesh[floating]) ** 2))
-            print(f"   gamma_0={row['cf0']:.1f}: melt RMSE vs ITS_LIVE = {rmse:.2f} m/yr")
-            if best is None or rmse < best[1]:
-                best = (row['cf0'], rmse, mdi)
-
-        if best is not None:
-            print(f"\nBest gamma_0 = {best[0]:.2f} m/yr (melt RMSE = {best[1]:.2f} m/yr)")
-            md = best[2]
-            md.basalforcings.gamma_0 = best[0]
-            print(f"Saving to {model_dir}/AIS3_melt_gamma_tuning.nc")
-            pyissm.model.io.save_model(md, f'{model_dir}/AIS3_melt_gamma_tuning.nc')
-        else:
-            print(f"   No sweep runs loaded successfully -- nothing to save.")
-
-    else:
-        print(f"-- Submitting gamma_0 sweep ({len(gamma_grid)} runs)...")
-        for _, row in gamma_grid.iterrows():
-            # BUGFIX (2026-08-30): md.extract() with an all-true mask still does a full
-            # ISSM mesh-connectivity rebuild (vertex/element renumbering, connectivity
-            # recompute) -- real work, not a cheap no-op, at 23.8M nodes. copy.deepcopy()
-            # duplicates the in-memory object directly without touching ISSM's mesh
-            # machinery at all -- genuinely cheap, and correct here since every run needs
-            # the identical mesh/geometry, only gamma_0 differs.
-            mdi = copy.deepcopy(md)
-            mdi.basalforcings.gamma_0 = float(row['cf0'])
-            mdi.miscellaneous.name = f"AIS3_melt_gamma_tuning_g{row['run_id']}"
-            mdi.cluster = md.cluster
-            print(f"   run {row['run_id']}: gamma_0={row['cf0']:.1f}")
-            pyissm.model.execute.solve(mdi, 'Transient', load_only = False, runtime_name = False)
+        print(f"Saving to {out_path}")
+        pyissm.model.io.save_model(md, out_path)
 
 
 ## ------------------------------------
@@ -2421,6 +2415,16 @@ if 'ho_relaxation' in steps:
     md.timestepping.final_time = 1     # years -- short shock-damping only, see note above
     md.timestepping.time_step  = 0.02  # years
 
+    # FIX (2026-09-28, worklog 4y/4z): this relaxation previously ran with md.smb.mass_balance
+    # = 0 inherited from the melt-tuning model, i.e. no snowfall on grounded ice. Force it with
+    # a constant RACMO 1979-1994 mean -- the climate just before the historical run starts in
+    # 1995. Ocean melt is the calibrated ismip6 config carried in AIS3_melt_gamma_tuning.nc.
+    print(f"-- Relaxation forcing: basalforcings={type(md.basalforcings).__name__} "
+          f"(gamma_0={getattr(md.basalforcings, 'gamma_0', None)}), RACMO 1979-1994 mean SMB...")
+    md.smb = pyissm.model.classes.smb.default(md.smb)
+    md.smb.mass_balance = racmo_mean_smb(md, 1979, 1994)
+    sync_mesh_z(md)
+
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_ho_relaxed'
     # BUGFIX (2026-09-02, found before ever running this step): the shared default `cluster`
@@ -2447,7 +2451,8 @@ if 'ho_relaxation' in steps:
     # submits (pyissm/model/execute.py:1078-1082 unconditional early return) -- it only loads
     # results from an already-finished prior run, which never existed for this step. Fixed to
     # the single synchronous submit-and-wait call used everywhere else in this pipeline.
-    md.settings.waitonlock = 1440  # minutes
+    # 40h: the wait includes the inner job's hugemem queue time, not just its 24h run (worklog 4p).
+    md.settings.waitonlock = 60 * 40  # minutes
     md.settings.solver_residue_threshold = 1e-3
 
     print(f"-- Submitting and waiting on post-calibration relaxation...")
@@ -2458,6 +2463,10 @@ if 'ho_relaxation' in steps:
         print(f"\nRELAXATION DIAGNOSTICS:")
         print(f"   Max |dH| over relaxation: {np.nanmax(np.abs(dH)):.2f} m")
         print(f"   Mean |dH| over relaxation: {np.nanmean(np.abs(dH)):.2f} m")
+
+    # FIX (2026-09-28, worklog 4y): without this the saved file keeps the pre-relaxation geometry.
+    adopt_final_state(md)
+    sync_mesh_z(md)
 
     print(f"\nSaving to {model_dir}/AIS3_ho_relaxed.nc")
     pyissm.model.io.save_model(md, f'{model_dir}/AIS3_ho_relaxed.nc')
@@ -2500,7 +2509,7 @@ if 'historical_dhdt_tuning' in steps:
     FULL_START_TIME = 1995.0
     FULL_END_TIME = 2019.0  # bounded by dhdt_cpom coverage, see note below
 
-    resume_path = f'{model_dir}/AIS3_historical_1995_2019.nc'
+    resume_path = f'{model_dir}/AIS3_historical_1995_2019{HIST_TAG}.nc'
     resuming = os.path.exists(resume_path)
     if resuming:
         print(f"-- Resuming historical transient from checkpoint ({resume_path})...")
@@ -2550,6 +2559,9 @@ if 'historical_dhdt_tuning' in steps:
         md.geometry.base = base_new
         md.geometry.surface = surf_new
         md.mask.ocean_levelset = ol_new
+        # The 3D mesh's vertex z must follow the new geometry (2026-09-28): it previously kept the
+        # prior chunk's input z while thickness/base/surface moved on.
+        sync_mesh_z(md)
         # Free the prior chunk's results before submitting the next one -- same
         # memory-pressure precedent as melt_gamma_tuning_ssa's TransientSolution-stripping fix.
         md.results.TransientSolution = []
@@ -2560,6 +2572,7 @@ if 'historical_dhdt_tuning' in steps:
         # returns each basalforcings.tf entry as a plain Python list, not ndarray -- crashes
         # marshalling's numpy-elementwise scaling step). Same fix.
         md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
+        sync_mesh_z(md)
         current_time = FULL_START_TIME
 
     chunk_final_time = min(current_time + CHUNK_YEARS, FULL_END_TIME)
@@ -2616,7 +2629,7 @@ if 'historical_dhdt_tuning' in steps:
     md.smb.mass_balance = mb_arr
 
     print(f"-- Assigning cluster and updating settings...")
-    md.miscellaneous.name = 'AIS3_historical_1995_2019'
+    md.miscellaneous.name = f'AIS3_historical_1995_2019{HIST_TAG}'
     # BUGFIX (2026-09-02, found before ever running this step -- same as ho_relaxation just
     # above): shared default `cluster` (48 cores/190GB/normal) is sized for the SSA track;
     # this step still runs on the ~23.8M-node HO mesh, needs the same hugemem override every
@@ -2653,12 +2666,35 @@ if 'historical_dhdt_tuning' in steps:
     md.settings.waitonlock = 60 * 40  # minutes -- must exceed cluster.time above
     md.settings.solver_residue_threshold = 1e-3
 
+    H_start_for_history = np.asarray(md.geometry.thickness).ravel()[:int(md.mesh.numberofvertices2d)].copy()
     print(f"-- Submitting and waiting on historical transient chunk "
           f"(t={current_time} -> {chunk_final_time})...")
     md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
 
     print(f"\nSaving checkpoint to {resume_path}")
     pyissm.model.io.save_model(md, resume_path)
+
+    # Keep this chunk's per-step history (base layer; thickness is uniform down each column):
+    # the checkpoint is overwritten by the next chunk, which is how the 2001/2007 states were
+    # lost from the first full run (worklog 4v). ~0.4 GB per field per chunk.
+    _ts = md.results.TransientSolution
+    _nv = md.mesh.numberofvertices
+    _nvb = int(md.mesh.numberofvertices2d)
+
+    def _hist(field):
+        if isinstance(_ts, list):
+            return np.stack([np.asarray(getattr(t, field)).ravel()[:_nvb] for t in _ts]).astype(np.float32)
+        raw = np.asarray(getattr(_ts, field)).ravel()
+        return raw.reshape(raw.size // _nv, _nv)[:, :_nvb].astype(np.float32)
+
+    _hist_path = (f'{model_dir}/AIS3_historical_1995_2019{HIST_TAG}_history_'
+                  f'{current_time:.0f}-{chunk_final_time:.0f}.npz')
+    _thick_hist = _hist('Thickness')
+    np.savez(_hist_path,
+             times=current_time + md.timestepping.time_step * np.arange(1, _thick_hist.shape[0] + 1),
+             thickness=_thick_hist, ocean_levelset=_hist('MaskOceanLevelset'),
+             initial_thickness=H_start_for_history.astype(np.float32))
+    print(f"Saved per-step history to {_hist_path}")
 
     if chunk_final_time < FULL_END_TIME:
         print(f"-- Chunk complete (t={chunk_final_time} of {FULL_END_TIME}). Rerun this step "

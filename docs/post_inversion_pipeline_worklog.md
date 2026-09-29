@@ -9,20 +9,38 @@ structurally, adapted to pyISSM.
 
 ---
 
-## 1. Stage status
+## 1. Stage status (updated 2026-09-29)
+
+HO track (`config/ais_0.1.py`):
 
 | stage | `steps` name | status | output |
 |---|---|---|---|
 | 1. HO thermal spin-up | `ho_thermal_steadystate` | **validated** | `AIS3_thermal_steadystate.nc` |
-| 2. HO friction re-inversion | `ho_friction_inv` | **in progress** (chunked, see §3.4) | `AIS3_ho_friction_inv.nc` |
-| 3. Ocean melt (gamma) calibration | `melt_gamma_tuning` | **invalid — RMSE metric confirmed gamed** (§4a), use the ISMIP7-informed calibration instead | `AIS3_melt_gamma_tuning.nc` (do not use) |
-| 4. Post-calibration relaxation | `ho_relaxation` | scaffold, untested | `AIS3_ho_relaxed.nc` |
-| 5. Historical run (1995–2019) vs dH/dt | `historical_dhdt_tuning` | scaffold, untested | `AIS3_historical_1995_2019.nc` |
-| 6. Future projections (SSP-forced) | `projection_ssp` | scaffold, untested | `AIS3_projection_{gcm}_{scenario}.nc` |
+| 2. HO friction re-inversion | `ho_friction_inv` | **paused after chunk 3** (chunk 4 failed 5×, §4h/§4j); grounded RMSE ~94–99 m/yr. Downstream HO steps may be using chunk 2's friction, not chunk 3's — being checked (§5c) | `AIS3_ho_friction_inv.nc` (chunk 3, smoothed); `..._chunk3_backup_presmoothing.nc` (unsmoothed) |
+| 3. Ocean melt calibration | `melt_gamma_tuning` (now builds the validated calibration, §5d) | **calibrated**: gamma_0=300 with per-basin refit deltaT (§4b–4c); thickness restored (§4i) | `AIS3_melt_gamma_tuning.nc` |
+| 4. Post-calibration relaxation | `ho_relaxation` | **rerun 2026-09-29** (1 yr, RACMO 1979–1994 SMB + calibrated melt); relaxed state now saved as the model state, vertical mesh synced (§4y, §4z) | `AIS3_ho_relaxed.nc` (old: `..._prerelaxfix.nc`) |
+| 5. Historical run (1995–2019) vs dH/dt | `historical_dhdt_tuning` | **complete but from the unrelaxed start with a stale vertical mesh** (§4m–§4u, §5a); HO flows ~10–15% too fast (§5a–§5c). Relaxed-start rerun (`AIS3_HIST_TAG=_relaxfix`) on hold until §5c is resolved | `AIS3_historical_1995_2019.nc`; chunk-1 rerun `..._chunk1rerun.nc` |
+| 6. Future projections (SSP-forced) | `projection_ssp` | scaffold, untested; TF/SMB-onto-mesh interpolation still a TODO here (implemented in the SSA scaffold) | `AIS3_projection_{gcm}_{scenario}.nc` |
+
+SSA track (`config/ais_0.1_SSA.py`; SSA deliberately starts downstream steps from the inverted,
+not the relaxed, geometry — by design, see the §4z correction):
+
+| stage | `steps` name | status | output |
+|---|---|---|---|
+| 1. Inversion + solve (Budd p=q=1) | `ssa_inverted_solve_budd` | **done**; thickness restored (§4k) | `AIS3_SSA_inverted.nc` |
+| 2. Relaxation (20 yr, zero SMB/melt) | `ssa_relaxation_budd` | **done**; not propagated downstream, by design | `AIS3_SSA_relaxed.nc` |
+| 3. Ocean melt calibration | `melt_gamma_tuning_ssa` + refit + `finalize_ssa_melt_calibration.py` | **calibrated**: gamma_0=300, refit deltaT (§4k, §4n) | `AIS3_melt_final_ssa.nc` |
+| 4. Historical run (1995–2019) | `historical_dhdt_tuning_ssa` | **done**: area-mean close to CPOM after a ~6-yr start-up transient; no interannual skill; misses the West Antarctic acceleration (§4q–§4t, §5b) | `AIS3_historical_1995_2019_SSA.nc` |
+| 5. Future projections | `projection_ssp_ssa` | scaffold; time-varying TF/SMB interpolation implemented and smoke-tested, not run. Uses absolute `acabf` from placeholder `SDBN1-8000m`; SMB anomaly method and elevation feedback still TODO | `AIS3_projection_ssa_{gcm}_{scenario}.nc` |
 
 Scaffolded stages have correct model loading / solver setup / save pattern and real data
 paths, but open science decisions are marked `# TODO:` in the code rather than silently
 resolved — do not treat their intermediate outputs as validated.
+
+Validation caveat for both tracks: the production "grounded dH/dt mismatch RMSE" (HO 1.768,
+SSA 1.402 m/yr) is a per-vertex spatial RMSE of the 24-yr mean rate against only CPOM's 2019
+slice. It cannot see a domain-wide bias and is not a temporal validation. Use the area-weighted,
+fixed-coverage, per-basin time series instead (§4r–§4t, §5b).
 
 ---
 
@@ -1167,3 +1185,465 @@ directly) — this is the out-of-sample validation this whole step exists to pro
 step's own purpose, discussed in conversation: friction inversion matches a velocity
 snapshot, melt calibration matches basal melt rates, neither directly tests whether the
 model's *evolution over time* looks like reality; this does).
+
+## 4r. SSA historical run: time-series check corrects §4q's "good validation" framing
+
+§4q called RMSE=1.402 m/yr "a genuinely good validation result". That was overstated. Two
+problems with the number, then a second correction to my own first correction:
+
+**Problem 1 — the metric compares different quantities.** The production diagnostic is a
+per-vertex spatial RMSE of the simulated 24-year MEAN rate `(H_2019-H_1995)/24` against only
+`dhdt_cpom`'s LAST (2019) slice (`.isel(cpom_dhdt_time=-1)`), not a temporal comparison. It is
+dominated by local noise of order +-1 m/yr, so it cannot see (or rule out) a domain-wide bias.
+`dhdt_cpom` has 27 annual slices (1993-2019) that evolve smoothly (looks like a multi-year
+trend product, not independent annual snapshots).
+
+**Problem 2 — first time series (`check_ssa_historical_timeseries.py`) was misleading.**
+Unweighted vertex mean over all grounded vertices (sim) vs. over obs-finite grounded vertices
+(obs): sim +0.30 -> +0.06 m/yr, obs -0.06 -> -0.20 m/yr, "wrong sign", RMSE 0.2685, corr 0.722.
+I read this as the model gaining mass while observations lose it, and hypothesised drift toward
+equilibrium from an initial imbalance. **That conclusion was an artifact** of (a) an unweighted
+vertex mean on a mesh that is much finer at the margins/fast flow, so it overweights those
+regions, and (b) mismatched coverage between the sim and obs averages.
+
+**Redo (`check_ssa_historical_timeseries_areaweighted.py`, job 179716441):** area-weighted
+(vertex control-volume area), with sim and obs averaged over the SAME vertices each year
+(grounded AND obs finite). Grounded = 77.4% of vertices but 76.5% of mesh area (12.02 Mkm^2).
+- Area-weighted mean 1996-2019: sim +0.0025 m/yr, obs -0.0017 m/yr; mean bias +0.0042 m/yr;
+  RMSE 0.0145 m/yr. The sign disagreement is gone: both are ~0 in the area mean.
+- Unweighted (same common mask) RMSE is 0.1703 m/yr — 12x larger — so the earlier large
+  bias was mostly a weighting effect.
+- **Correlation = -0.134**: the model has no skill at reproducing the observed interannual
+  variability. Sim starts negative (-0.024 in 1996) and drifts positive; obs wanders around zero
+  (-0.012..+0.013). Notable sim spike in 2016 (+0.024, ~+258 Gt/yr integrated) that obs
+  (+0.005) doesn't show; 2016 RACMO mesh-mean SMB was also the anomalous high (0.640 vs ~0.53).
+  The drift-to-equilibrium hypothesis from the first pass is NOT supported and is withdrawn.
+- Caveat on coverage: the common mask grows from ~7.8 Mkm^2 (1996-2010) to ~11.5 Mkm^2
+  (2011+), i.e. CPOM coverage expands (CryoSat-2 era) — the yearly means/Gt-yr values are over
+  different areas across the record, so the time-series shape is partly a coverage artifact.
+  Integrated Gt/yr (sim +32.0, obs -17.1 Gt/yr mean) uses non-firn-corrected obs and is only
+  indicative, not comparable to IMBIE totals.
+
+**Where SSA historical validation actually stands:** area-mean dH/dt magnitude is consistent with
+observations (both ~0, well within obs noise), which is a real if modest positive. It does NOT
+demonstrate skill in interannual variability (corr -0.13). Not yet done: fixed-area (constant
+coverage) comparison, comparison to a 1995-2019 mean/trend product instead of annual slices,
+per-basin comparison, and a firn/SMB-response-aware treatment of the altimetry. The same caveat
+(spatial RMSE vs only the last dhdt_cpom slice) applies to the HO number when chunk 4 finishes.
+
+## 4s. SSA historical: fixed-coverage, per-basin comparison (follow-up to 4r)
+
+`check_ssa_historical_fixedcov_basins.py` (job 179718665). Fixes 4r's coverage problem: every
+year uses the same vertices — grounded AND `dhdt_cpom` finite in all 24 years (1996-2019):
+599,285 vertices, 7.56 Mkm^2, 62.9% of grounded area (the rest is mostly areas without early
+altimetry coverage). All means area-weighted.
+
+- Whole domain: sim mean -0.0086 m/yr, obs -0.0026 m/yr (-59.8 vs -18.2 Gt/yr over the fixed
+  area); bias -0.0060, RMSE 0.0109, time corr +0.136. On a fixed area both are NEGATIVE; the
+  model thins ~3x more than CPOM in the mean.
+- Trends (fit to the printed series): sim +0.00034 m/yr per yr, obs -0.00069. The opposite
+  trends are NOT a coverage artifact — they survive fixed coverage. But the sim trend excluding
+  1996-1999 is -0.00007 (flat): the sim's upward trend is entirely its first ~4 years.
+- Spatial pattern (area-weighted correlation across vertices): 1996-2019 mean-dH/dt map 0.166,
+  trend map -0.005. Weak skill in the mean pattern, none in where things are changing.
+- Per basin (IMBIE2 numbering; no names in the source files, locations from basin centroids):
+  13/16 basins same sign as obs. Opposite sign: basins 0 (~12E), 6 (~179W), 11 (~77W).
+  Nearly all the mass loss is in basins 8 (~139W), 9 (~115W, Amundsen Sea sector) and 10
+  (~94W): sim -20.9/-84.9/-6.1 Gt/yr vs obs -11.1/-65.0/-0.9 — the model OVER-thins them, and
+  their per-basin time correlations are ~0 (-0.07, -0.03, 0.43). The large East Antarctic
+  basins are small in both, with per-basin corr 0.4-0.8 (consistent with 4t: SMB-driven).
+- So the near-zero whole-domain mean in 4r did hide a regional error, but not an opposite-sign
+  cancellation: West Antarctic over-thinning offset by coverage-dependent interior thickening.
+
+## 4t. Why the SSA sim trend opposes CPOM: SMB correlation test
+
+`check_ssa_historical_smb_correlation.py` (job 179720452). Correlates area-weighted grounded
+sim dH/dt with the area-weighted RACMO SMB the run was actually forced with (read from the saved
+`md.smb.mass_balance`), and splits sim dH/dt = SMB + residual (residual = -div(flux), i.e.
+dynamics). Note: this script averages sim over ALL grounded vertices but obs over obs-finite
+vertices (different areas), so its sim-vs-obs line (+0.279) is not comparable to 4s; the
+sim-vs-SMB numbers use the same area on both sides and are the point of the test.
+
+- Sim vs SMB (average of year and previous year, which the H(yr)-H(yr-1) interval spans):
+  levels r=0.846, first differences r=0.972. Residual std 0.0039 vs SMB std 0.0060. The sim's
+  year-to-year signal is almost entirely surface forcing; with near-steady dynamics this is
+  close to built in (dH/dt = SMB - div(flux)).
+- Obs vs SMB: levels r=0.443, first differences r=0.388 — altimetry has an SMB/firn signal
+  (it is not firn-corrected), but much more besides.
+- Trend decomposition: sim +0.00036 = residual +0.00043 + SMB -0.00007. The residual (dynamic
+  loss) goes -0.183 (1996) -> -0.172 (2000) -> -0.167 (2019): almost all the change is in the
+  first ~4 years.
+
+Hypotheses from the conversation, assessed (24 autocorrelated points — no causal claims):
+- **Start-up transient — supported.** The sim's upward trend is entirely dynamic, concentrated
+  in 1996-1999; excluding those years the fixed-coverage sim trend is flat (4s). With static
+  ocean forcing and trendless SMB, a changing dynamic term can only be internal adjustment.
+- **SMB-driven variability — supported (for the sim).** r=0.97 in first differences.
+- **Missing time-varying ocean forcing — consistent, not tested.** After the transient the model
+  is flat while CPOM trends negative, and the model has no mechanism for strengthening dynamic
+  thinning (static TF climatology). The basin-9/8/10 zero correlations point the same way.
+  A test needs per-basin trends, or a historical run with time-varying TF.
+- **CPOM not firn-corrected — untested.** Obs-vs-SMB r=0.44 shows altimetry carries SMB/firn
+  signal; whether firn trends bias the obs trend is not assessed here.
+
+## 4u. HO historical run complete (all 4 chunks)
+
+Chunk 3 (job 179637270, 2007->2013): exit 0, 14h56m of 45h. Chunk 4 (job 179716149,
+2013->2019, final): exit 0, 16h08m of 45h, 2324 SU. The 45h walltime / 40h waitonlock fix (4p)
+held for both. Full 1995-2019 HO run is in `AIS3_historical_1995_2019.nc`; `ais_0.1.py` `steps`
+reverted to `['ho_friction_inv']`.
+
+Production diagnostic: grounded dH/dt mismatch RMSE vs dhdt_cpom = 1.768 m/yr (SSA: 1.402).
+Same caveat as 4r: per-vertex spatial RMSE of the 24-year mean rate against only dhdt_cpom's
+2019 slice, dominated by local noise; not a temporal validation and cannot see a domain-wide
+bias. The area-weighted/fixed-coverage/per-basin time-series checks done for SSA (4r-4t) have
+not been done for HO: the chunked run only keeps the last chunk's per-step history, so yearly
+dH/dt would come from chunk-boundary snapshots (1995/2001/2007/2013/2019) plus chunk 4's
+steps, unless the chunks are rerun with per-year snapshots saved.
+
+## 4v. HO per-year history mostly lost; chunk-1 rerun + partial HO analysis
+
+Correction to 4u: the chunk-boundary thicknesses for 2001 and 2007 do NOT survive. Every chunk
+saved to the same checkpoint (`AIS3_historical_1995_2019.nc`) and ran in the same execution
+directory, so each overwrote the last. What survives: H(1995) (`AIS3_ho_relaxed.nc`), H(2013)
+(final checkpoint's `md.geometry`, chunk 4's initial condition) and chunk 4's 60 steps
+(2013.1-2019.0). Lesson for any future chunked run: keep a per-chunk copy of the history.
+
+Two follow-ups submitted:
+- `check_ho_historical_timeseries.py` (job 179851729, hugemem): HO vs SSA vs CPOM under
+  identical definitions — 1995-2013 mean rate and yearly 2014-2019, fixed-coverage grounded
+  mask, area-weighted, whole domain and per ISMIP7 basin. HO has 15x SSA's vertex count
+  (23,833,290 = 15 x 1,588,886), i.e. apparently the SSA mesh extruded to 15 layers; the
+  script checks the base layer matches the SSA mesh exactly before comparing.
+- Chunk-1 rerun (job 179851673, `launch_historical_chunk1_rerun.pbs`): 1995-2001 again, into
+  `AIS3_historical_1995_2019_chunk1rerun.nc` with its full 0.1 yr history, to look for the HO
+  start-up transient (SSA's was in 1996-1999, see 4t). The launcher refuses to run if that file
+  already exists, so it cannot continue into chunk 2.
+
+`ais_0.1.py` change: `steps` can now be overridden per job via `qsub -v AIS3_STEPS=...`, and
+`AIS3_HIST_TAG` suffixes the historical checkpoint and execution name. This avoids holding an
+edit to the shared `steps` through a multi-day hugemem queue wait (the race hazard that the
+qcat-confirmation protocol existed for). Default behaviour with neither variable set is unchanged.
+
+## 4w. HO vs SSA vs CPOM with the surviving HO output (`check_ho_historical_timeseries.py`)
+
+Job 179851729. Checks before comparing: the HO base layer is identical to the SSA mesh
+(23,833,290 = 15 x 1,588,886 vertices, same coordinates and order), so both models use the same
+vertices, areas and fixed-coverage mask (599,285 vertices, 7.563 Mkm^2, as in 4s). The final
+HO checkpoint's `md.geometry.thickness` is the 2013 state: H(2013.1) minus it is +0.021 m mean
+(p99 0.65 m), i.e. ~0.1 yr of SMB. Grounded masks (SSA final vs HO 2013) agree on 96.35% of
+vertices. Quantities: 1995-2013 mean rate (H2013-H1995)/18 vs mean of CPOM's 1996-2013 slices;
+yearly 2014-2019. Area-weighted, rho_ice 917.
+
+Whole domain (Gt/yr over the fixed area):
+
+| period | HO | SSA | CPOM |
+|---|---|---|---|
+| 1995-2013 mean | -150.6 | -64.1 | -5.3 |
+| 2014-2019 mean | -111.7 | -47.9 | -56.9 |
+
+- Both models thin LESS in the late period than the early one, while CPOM thins MORE (-5 ->
+  -57 Gt/yr). HO has the same qualitative behaviour as SSA (4s/4t).
+- HO is systematically more negative than SSA: by -0.0125 m/yr over 1995-2013 and by an almost
+  constant -0.0088 to -0.0096 m/yr in every year 2014-2019. HO and SSA year-to-year variability
+  is otherwise the same (same RACMO forcing, variability SMB-driven per 4t); the difference is
+  a steady, slowly shrinking offset, i.e. extra dynamic thinning in HO.
+
+Per ISMIP7 basin (Gt/yr; Mouginot equivalents from the basin mapping):
+- Mass-loss basins 8/9/10 (= Mouginot 10/11/12): basin 9 early HO -98.9, SSA -88.8, obs -54.3;
+  late HO -82.5, SSA -73.2, obs -97.1. Basin 8 early -24.6/-22.5/-9.0, late -18.0/-15.9/-17.4.
+  Both models over-thin early and under-thin late: they relax while CPOM accelerates. HO is
+  ~10% more negative than SSA here. Basin 10: late HO +0.5 vs SSA -4.3 vs obs -4.7 (HO wrong
+  sign late; 2016-2017 HO spike +0.11 m/yr).
+- Opposite-sign basins from 4s (0/6/11 = Mouginot 1/7/13): basin 0 obs thickens (+8.9 early,
+  +20.5 late), HO -6.4/-7.7 and SSA -2.4/-3.6 both thin; basin 11 early obs +2.7, HO -5.3,
+  SSA -1.7; basin 6 late all positive but models low (HO +1.4, SSA +1.9, obs +6.8).
+- Where SSA matched CPOM, HO often does not: basin 14 (= Mouginot 16+17) early HO +4.4 vs SSA
+  +28.6 vs obs +26.4; basin 15 early HO -5.4 vs SSA +3.3 vs obs +6.7 (wrong sign); basin 2 early
+  HO -7.0 vs SSA +3.9 vs obs +2.2 (wrong sign). HO's extra thinning is spread across East
+  Antarctica too, not only West Antarctica.
+
+Candidate reasons for HO's extra dynamic thinning (NOT tested): HO had only ~1 yr of relaxation
+(ho_relaxation) vs SSA's 20 yr, and HO's friction inversion stopped at chunk 3 (grounded velocity
+RMSE ~94-99 vs SSA ~60 m/yr), either of which could leave HO further from balance. The chunk-1
+rerun (job 179851673) will show whether HO has a larger 1996-2001 start-up transient than SSA.
+The 6 yearly 2014-2019 points are too few for correlations; levels only.
+
+## 4x. HO chunk-1 rerun: reproduces the original; HO start-up transient (1996-2001)
+
+The chunk-1 rerun (job 179851673, `launch_historical_chunk1_rerun.pbs`, AIS3_HIST_TAG=_chunk1rerun)
+succeeded: exit 0, 13h17m, 1913 SU, `AIS3_historical_1995_2019_chunk1rerun.nc` written, the main
+`AIS3_historical_1995_2019.nc` untouched (mtime still 2026-09-25 03:14). Analysis:
+`check_ho_chunk1_transient.py` (job 180009965).
+
+- **Reproduces the original chunk 1 exactly**: every dH percentile identical (p0 -1544.68 ... p100
+  1012.11 m), mean|dH| 16.71 m, newly floating 130,380, newly grounded 484,350.
+- HO and SSA start the historical run from the same thickness: base-layer 1995 difference is
+  exactly 0.000 m. First 0.1 yr step in HO changes thickness by -0.74 m mean (p99 14.6 m, full 3D)
+  vs +0.021 m for chunk 4's first step -- a large immediate adjustment (see 4y).
+- Whole domain, fixed coverage, area-weighted, 1996->2001 (m/yr): HO -0.048 -> -0.021, SSA -0.024
+  -> -0.007, CPOM -0.005 -> +0.010. Mean 1996-2001: HO -222, SSA -104, CPOM +33 Gt/yr.
+- Dynamic residual (dH/dt - SMB): HO -0.208 -> -0.187 (change +0.021), SSA -0.185 -> -0.173
+  (+0.012). Both have a start-up transient; HO's is ~1.7x larger and HO stays ~0.014 m/yr more
+  negative at 2001. Since both start from identical geometry, the HO-SSA gap is NOT relaxation
+  length (the 4w hypothesis is withdrawn, see 4y) -- it comes from the models themselves
+  (HO stress balance, HO friction field from the unconverged chunk-3 inversion, ...), untested.
+- Transient is concentrated in West Antarctica: residual change 1996->2001 HO/SSA basin 8 +0.11/
+  +0.09, basin 9 +0.07/+0.04, basin 10 +0.15/+0.09 m/yr. Basin 9 dH/dt 1996 HO -0.43, SSA -0.35,
+  CPOM -0.09. Basin 14 (= Mouginot 16+17): HO -2.9, SSA +26.7, CPOM +16.1 Gt/yr (HO residual
+  -0.14 vs SSA -0.107 -- HO's extra dynamic loss also in East Antarctica). Basin 13 (tiny):
+  HO residual change +0.23.
+
+## 4y. BUG (HO only): relaxation end states never propagated to downstream steps
+
+> **Correction (2026-09-28):** for SSA, starting downstream steps from the inverted rather than
+> the relaxed geometry is by design (user). The SSA consequences listed below are withdrawn;
+> only the HO part is a bug. See the correction note after §4z.
+
+Neither relaxation step writes its relaxed state into the saved geometry. `ho_relaxation`
+(`ais_0.1.py`) and `ssa_relaxation_budd` (`ais_0.1_SSA.py`) call `solve()`, which fills
+`md.results` only; `md.geometry`/`md.mask` stay the PRE-relaxation input and `save_model` writes
+that. (The relaxation diagnostics themselves compute `TransientSolution[-1].Thickness -
+md.geometry.thickness`, i.e. treat geometry as the start state.)
+
+Confirmed directly for SSA (`check_relaxed_geometry_propagation.py`, job 180016250):
+`md.geometry.thickness` of AIS3_SSA_relaxed, AIS3_melt_final_ssa and AIS3_historical_1995_2019_SSA
+are all bit-identical to AIS3_SSA_inverted (max|d| 0.0000 m) and differ from the 20-yr
+relaxation's end state by mean|d| 26.19 m, max 1522.78 m. For HO: code path is identical, and HO's
+historical 1995 geometry equals SSA's (4x, diff 0.000 m), so HO's 1-yr relaxation was not used
+either.
+
+Consequences:
+- The start-up transients in both historical runs (4t, 4x) are at least partly the model relaxing
+  at the start of the historical run from an unrelaxed state.
+- 4w's "HO 1 yr vs SSA 20 yr relaxation" explanation is moot: neither relaxation reached the run.
+- SSA melt calibration (melt_gamma_tuning_ssa, deltaT refit, finalize -> gamma_0=300) was done on
+  unrelaxed geometry; the relaxed geometry differs by up to ~1.5 km in places, so ice-shelf drafts
+  and hence basin melt could change. HO's melt calibration was on pre-relaxation geometry by
+  design (melt tuning precedes relaxation on HO), so that part is unaffected.
+
+Proposed fix (NOT applied, awaiting decision): after `solve()` in both relaxation steps, copy
+`TransientSolution[-1]` Thickness and MaskOceanLevelset into `md.geometry.thickness` /
+`md.mask.ocean_levelset`, recompute base/surface with the hydrostatic/bed formula (as the chunk-
+resume fix in 4o does), and ideally set `md.initialization` velocities from the last step, before
+`save_model`. The existing relaxation outputs already contain their end states, so the relaxations
+need not be rerun: a patch script can rewrite AIS3_SSA_relaxed.nc / AIS3_ho_relaxed.nc geometry.
+Rerun plan: SSA -- melt_gamma_tuning_ssa, deltaT refit + recalibrate, finalize, historical
+(historical alone ~6 h / ~530 SU; the melt chain is many short solves). HO -- historical 4 chunks
+(~13-17 h and ~2,000-2,500 SU each, ~9-10k SU plus queue), saving a per-chunk copy this time.
+Cheaper partial alternative: discard the first N years in comparisons (spin-up); that tidies the
+dH/dt comparison but does not fix the SSA melt calibration.
+
+**4y addendum -- HO direct check** (`check_ho_relaxed_geometry_propagation.py`, job 180019992):
+confirmed for HO. `md.geometry.thickness` (full 3D) of AIS3_ho_relaxed.nc and of the historical
+run's 1995 start (AIS3_historical_1995_2019_chunk1rerun.nc) are bit-identical to the relaxation
+input AIS3_melt_gamma_tuning.nc (max|d| 0.0000 m), and differ from the relaxation's own end state
+(1 yr, 50 saved steps) by mean|d| 6.623 m, max 1020.34 m. Grounded/floating mask: 100% equal to
+the input, 98.911% equal to the relaxation end (~1.1% of vertices changed state during the
+relaxation and that change was also lost). HO's 1-yr relaxation never reached the historical run.
+
+## 4z. Relaxation fix: rerun the HO relaxation with real forcing and propagate the end state
+
+> **Correction (2026-09-28):** this was first set up for both tracks; the SSA part was reverted
+> before running (job cancelled while queued, files and code restored). Only the HO rerun went
+> ahead. See the correction note and result below.
+
+Decision (user, 2026-09-28): full fix, both tracks, no old files deleted.
+
+Found while preparing the patch: the old relaxations ran with unrealistic forcing. SSA (20 yr):
+`smb.mass_balance = 0` AND floating/grounded melt = 0, i.e. grounded ice lost mass with no
+accumulation and ice shelves grew with no melt for 20 years. HO (1 yr): SMB = 0 (inherited from
+the melt-tuning model), calibrated ocean melt on. Propagating those end states as-is would have
+replaced "unrelaxed start" with "start shaped by zero forcing", so the user chose to rerun both
+relaxations with real forcing instead.
+
+Code changes:
+- New helpers (ais_0.1.py; copies in ais_0.1_SSA.py): `racmo_mean_smb(md, y0, y1)` (RACMO
+  smbgl time-mean, same unit handling as the historical runs), `adopt_final_state(md)` (copies
+  TransientSolution[-1] Thickness + MaskOceanLevelset into md.geometry/md.mask, recomputes
+  base/surface hydrostatically, sets md.initialization velocities when saved) and, HO only,
+  `sync_mesh_z(md)` (recomputes the extruded mesh's vertex z from base + sigma*H, keeping each
+  column's layer spacing; prints the prior z-vs-geometry mismatch).
+- `ho_relaxation`: SMB = RACMO 1979-1994 mean; `sync_mesh_z` before solve; `adopt_final_state` +
+  `sync_mesh_z` after solve, before save; waitonlock 40 h; launcher walltime 25 -> 45 h.
+- `ssa_relaxation_budd`: SMB = RACMO 1979-1994 mean; ocean melt = ismip6 config from
+  AIS3_melt_final_ssa.nc (gamma_0=300 + refit deltaT, i.e. the current calibration, itself fitted
+  on unrelaxed geometry -- the melt chain is recalibrated afterwards); `adopt_final_state` after
+  solve; waitonlock 40 h; launcher walltime 25 -> 45 h.
+- `historical_dhdt_tuning`: `sync_mesh_z` at fresh start and after chunk resume (z was never
+  updated when the resume changed geometry), and a per-chunk base-layer history file
+  `AIS3_historical_1995_2019{tag}_history_{t0}-{t1}.npz` (times, thickness, ocean_levelset,
+  initial_thickness) so per-step history survives the checkpoint being overwritten (4v).
+- Possible second latent issue: `restore_floored_thickness.py` changed HO thickness/base/surface
+  without updating `mesh.z`; `sync_mesh_z` prints the mismatch at the start of the HO relaxation,
+  which will show whether earlier HO runs started with stale z for those vertices.
+
+Archived (renamed with `mv -n`, not deleted): models/AIS3_SSA_relaxed.nc ->
+AIS3_SSA_relaxed_prerelaxfix.nc, execution_SSA/AIS3_SSA_relaxed -> *_prerelaxfix,
+models/AIS3_ho_relaxed.nc -> AIS3_ho_relaxed_prerelaxfix.nc, execution/AIS3_ho_relaxed ->
+*_prerelaxfix. Later steps will archive their own outputs the same way before overwriting.
+
+Submitted: SSA relaxation job 180027936 (ais_0.1_SSA.py steps=['ssa_relaxation_budd']); HO
+relaxation job 180027937 (`qsub -v AIS3_STEPS=ho_relaxation launch_ho_relaxation.pbs`).
+Then: SSA melt chain (gamma sweep, +1C sensitivity, deltaT refit rounds, recalibrate, finalize)
+and SSA historical; HO historical with AIS3_HIST_TAG=_relaxfix (new files; the finished run
+stays untouched).
+
+**4y/4z correction (user, 2026-09-28): SSA not using its relaxed state is BY DESIGN.** The
+unrelaxed-start finding is only a problem for HO. For SSA, the melt calibration (gamma_0=300)
+and the historical run starting from the inverted geometry are intended and stand as they are;
+the "SSA melt calibration on unrelaxed geometry" consequence in 4y is withdrawn. (The user's
+earlier "the SSA stuff was fine right just the HO one" meant this; I misread it as a question.)
+SSA side reverted: SSA relaxation job 180027936 cancelled while still queued (no compute used);
+AIS3_SSA_relaxed.nc and execution_SSA/AIS3_SSA_relaxed renamed back from _prerelaxfix;
+ais_0.1_SSA.py relaxation code, helpers, waitonlock, steps toggle and launch_ais_0.1_SSA.pbs
+walltime restored to their pre-4z state. The HO relaxation rerun (job 180027937) continues.
+
+## 5a. Why HO thins more than SSA: diagnosis from existing output
+
+**Stale HO vertical mesh (found by the HO relaxation rerun's `sync_mesh_z`, job 180027937):**
+"mesh.z vs geometry before sync: base max 80.987 m (123,133 columns off by >1 cm), surface max
+90.000 m (198,014 columns)". 198,014 columns ~ the ~198k vertices floored at 100 m and later
+restored by `restore_floored_thickness.py`, which edited thickness/base/surface but never
+`mesh.z`; max 90 m = 100 m floor minus ~10 m restored. Every HO run since that restoration (old
+relaxation, all 4 historical chunks) started with stale vertical coordinates in ~12.5% of
+columns (thin coastal ice). Likely part of HO's large first-step change (-0.74 m mean in 0.1 yr);
+it is confined to the margins, so it cannot explain the interior basins below. Fixed going
+forward by `sync_mesh_z` (4z).
+
+**Speed / rheology / first-year dynamic loss** (`check_ho_vs_ssa_dynamics.py`, job 180030381;
+grounded ice with observed speed, 12.02 Mkm^2; speeds at t=1995.1; HO = chunk-1 rerun, SSA =
+historical run; identical 1995 thickness, max|d| 0.0000 m):
+- Area-weighted mean speed: observed 22.5, SSA 21.8, HO depth-avg 24.6, HO surface 25.0, HO base
+  22.5 m/yr. Median vertex ratios: HO surface/observed 1.11, SSA/observed 0.99, HO depth-avg/SSA
+  1.15 (1.09-1.64 in every basin). SSA matches observed speed; HO flows ~10-15% too fast almost
+  everywhere.
+- First-year dynamic loss (dH/dt - SMB, integrated): HO -2300 vs SSA -2035 Gt/yr (+13%),
+  proportional to the speed excess. HO's extra thinning is HO flowing too fast.
+- HO flow is mostly sliding at the start: median HO base/surface speed 0.93.
+- Rheology: HO depth-averaged rheology_B is lower than SSA's (median ratio 0.939 by vertex, but
+  the map shows ~0.7-0.8 across the East Antarctic interior and much of West Antarctica; basin
+  medians b7 0.79, b14 0.84, b2 0.86, b15 0.91). Basins where B matches (b4 1.00, b5 1.00) have
+  HO ~= SSA dynamic loss (-243 vs -253, -129 vs -128 Gt/yr); the softest basins carry the largest
+  HO excess (b14 -284 vs -218, b2 -93 vs -64). Strong spatial association.
+- Map (models/ho_vs_ssa_dynamics_maps.png): per-vertex HO-SSA dynamic difference is largest at
+  the margins (mixed sign, where the stale-z columns are); HO/SSA speed ratio >1 broadly across
+  West Antarctica, the Peninsula and coastal East Antarctica; HO/SSA B ratio ~0.7-0.8 over the
+  interior, ~1 near the margins.
+
+Assessment (not yet tested causally):
+- Supported: HO's excess thinning comes from HO flowing ~10-15% faster than observed; HO's
+  depth-averaged ice is substantially softer than SSA's, and the softness lines up with where
+  HO's excess is.
+- Entangled: the HO friction inversion was run with this softer B and should have compensated
+  with stronger friction; it stopped unconverged (chunk 3, RMSE ~94-99 m/yr) with surface speed
+  ~11% too fast. Softer rheology and the unconverged friction inversion are two sides of the same
+  outcome; this output cannot split them.
+- Ruled out as the main cause: stale mesh.z (margins only).
+- Not checked: where SSA's grounded rheology_B comes from vs HO's (HO's is from its own 3D
+  thermal steady state).
+- Tests that would settle it: (1) one HO diagnostic stress-balance solve with SSA's B replicated
+  vertically -> if HO speed drops to ~observed, rheology is the driver; (2) continue the HO
+  friction inversion (chunk 4, paused) to convergence with the current B -> if speed then matches
+  observations, the start is fixed but the softer ice may still evolve faster.
+- Recommendation: settle this before the ~9-10k SU HO historical rerun, which would otherwise
+  inherit the same ~10-15% too-fast flow.
+
+## 5b. dH/dt plots updated with the early HO years (`check_ho_historical_timeseries_v2.py`)
+
+Job 180030939. HO now: yearly 1996-2001 (chunk-1 rerun), 2002-2013 mean (H2013 - H2001; valid
+since the rerun reproduces chunk 1 exactly), yearly 2014-2019. SSA and CPOM yearly. Fixed
+coverage (7.563 Mkm^2), area-weighted. New files `models/ho_vs_ssa_historical_dhdt_domain_v2.png`
+and `..._basins_v2.png`; earlier plots untouched. All HO numbers are from the UNRELAXED-start,
+stale-mesh-z, too-fast (5a) HO run.
+
+Whole domain (Gt/yr): 1996-2001 HO -222, SSA -104, CPOM +33; 2002-2013 HO -115, SSA -44, CPOM
+-25; 2014-2019 HO -112, SSA -48, CPOM -57. HO yearly m/yr: -0.048 (1996) -> -0.021 (2001), then
+-0.0165 mean 2002-2013 and -0.005..-0.025 in 2014-2019. HO's start-up transient is about twice
+SSA's, and after it HO stays ~0.009-0.010 m/yr below SSA in every year with data (2014-2019
+offset -0.0088 to -0.0096) -- a persistent excess matching the too-fast flow in 5a, not only a
+start-up effect. SSA, once past its own ~6-yr transient, sits near CPOM in the domain mean
+(2002-2013 -0.0064 vs -0.0035 m/yr).
+
+Per basin (early / 2002-2013 / late, Gt/yr, HO | SSA | CPOM):
+- 9 (Amundsen, = Mouginot 11): -107/-95/-83 | -89/-89/-73 | -32/-65/-97. Models steady or
+  weakening; CPOM thinning triples. 8: -27/-24/-18 | -23/-22/-16 | -0.5/-13/-17. 10: -7/-1/+0.5
+  | -8/-6/-4 | +1/-0.3/-5.
+- 0 (= Mouginot 1): CPOM thickens (+8/+9/+20); HO -13/-3/-8 and SSA -9/+1/-4 thin -- wrong sign
+  throughout. 6: late HO +1.4, SSA +1.9, CPOM +6.8. 11: early HO -5.9, SSA +0.3, CPOM +12.1.
+- 14 (= Mouginot 16+17): SSA +27/+30/+31 vs CPOM +16/+32/+29 (good); HO -3/+8/+16 (far low).
+  15: 2002-2013 HO -3.0, SSA +5.1, CPOM +8.2. 2: HO -14/-4/-11 vs CPOM +6/+0.5/-3.
+
+**4z result -- HO relaxation rerun succeeded** (outer 180027937 exit 0, 8h46m, 1262 SU; inner
+180031263). Forcing: RACMO 1979-1994 mean SMB (mesh-mean 0.549 m ice eq/yr, full coverage) and
+the calibrated ismip6 melt (gamma_0=300). `sync_mesh_z` before the solve corrected the stale z
+(198,014 columns, max 90 m, see 5a). Over the 1 yr: mean|dH| 6.60 m, max 868.37 m;
+grounded/floating changed at 1.113% of vertices; initialization velocities (Vx, Vy, Vz, Vel)
+taken from the last step. Old zero-SMB relaxation for comparison: mean|dH| 6.623 m, max 1020.34 m,
+1.089% -- nearly the same mean, as expected for a 1-yr run where SMB is a small term. The
+post-adoption `sync_mesh_z` moved z in 1,577,063 columns (base max 778 m, surface max 616 m):
+that is the mesh following the adopted relaxed geometry, expected rather than an error.
+New `models/AIS3_ho_relaxed.nc` (139 GB, 2026-09-29 00:36) now holds the relaxed state in its
+geometry; `AIS3_ho_relaxed_prerelaxfix.nc` is kept. HO historical rerun NOT started: awaiting the
+decision on HO's too-fast flow (5a/5b).
+
+## 5c. HO stress-balance tests: rheology vs friction (submitted)
+
+User chose to settle HO's too-fast flow (5a/5b) before the HO historical rerun, via a rheology
+test. While setting it up, found from code that `finalize_melt_calibration.py` builds
+AIS3_melt_gamma_tuning.nc from AIS3_ho_friction_inv.nc and uses its `md.friction.C` as is -- it
+never copies `results.StressbalanceSolution.FrictionC` (the inversion's actual output) into the
+model. Given the chunk-resume logic, the saved `md.friction.C` is the field chunk 3 STARTED from
+(chunk 2's output), so every downstream HO step (melt calibration, relaxation, historical) may be
+running one inversion chunk behind. To be confirmed with data.
+
+`ho_stressbalance_tests.py` (`qsub -v PHASE=submit|analyze launch_ho_stressbalance_tests.pbs`,
+job 180093951 submit phase): prints the friction provenance (relaxed model's friction.C vs chunk-2
+output, chunk-3 output unsmoothed, chunk-3 smoothed), then submits single HO stress-balance
+solves from the new relaxed model: A as is; B with SSA's rheology_B copied to all 15 layers;
+C with the unsmoothed chunk-3 FrictionC (only if the friction in use differs from it). Analyze
+phase compares surface/depth-avg speeds with observed and SSA speeds, domain and per basin.
+New execution names AIS3_ho_sbtest_*; nothing existing modified.
+
+**5c friction provenance -- CONFIRMED** (job 180093951, submit phase): the relaxed HO model's
+`friction.C` is bit-identical to the chunk-2 output (chunk 3's starting field; max|d| 0). So every
+downstream HO step -- melt calibration, relaxation (old and new), all historical chunks -- ran with
+friction one inversion chunk behind. The size of the lag is small over most of the ice: chunk-3 vs
+chunk-2 C differs by mean|d| 1.406 (max 3929); on grounded base vertices the chunk-3/in-use ratio
+has median 1.001, p10 0.987, p90 1.031. So chunk 3 barely changed C in most places, and the stale
+field is unlikely to explain a ~10-15% speed excess on its own; case C of the test measures it.
+The smoothed chunk-3 field (used only by the failed chunk-4 attempt 5) differs more (mean|d|
+1.711, max 7973). HO rheology_n = 3.
+
+**5c solves submitted** (driver 180093951 exit 0; SSA rheology_n = 3, same as HO): A
+`AIS3_ho_sbtest_A_asis` (job 180096981), B `AIS3_ho_sbtest_B_ssaB` (180097005), C
+`AIS3_ho_sbtest_C_chunk3C` (180097089). Case A crashed 9 min in, during its first velocity solve,
+with SEGV on many MPI ranks (exit 59). B and C, identical apart from the one changed field, ran past
+that point, so this looks like a node/MPI fault rather than an input problem (a hugemem SIGBUS
+also hit chunk-4 attempt 5, §4j). Resubmitted A's prepared `.queue` script unchanged (job
+180100939); crash log kept as `AIS3_ho_sbtest_A_asis.outlog_segv1`.
+
+## 5d. `melt_gamma_tuning` step replaced with the validated calibration (2026-09-29)
+
+The `melt_gamma_tuning` step in `ais_0.1.py` still ran the per-vertex RMSE `gamma_0` sweep that
+§4b showed is invalid. Its save branch wrote to `AIS3_melt_gamma_tuning.nc`, `ho_relaxation`'s
+input, so running the step would have replaced the validated file with the invalid pick. The
+production file was actually built outside `ais_0.1.py`, by `finalize_melt_calibration.py`
+followed by `restore_floored_thickness.py`.
+
+The step now builds that file directly, with no solve:
+- loads `AIS3_ho_friction_inv.nc`
+- restores the 100 m floored thickness from `AIS3_param.nc` (same method as
+  `restore_floored_thickness.py`), then runs `sync_mesh_z`
+- sets ismip6 with IMBIE2 basins, Zhou TF, `gamma_0=300` and the 16 refit `deltaT` values
+  hard-coded from `deltaT_refit_state.json` candidate 1 (round 5, converged)
+- keeps `md.friction.C` as loaded, i.e. the chunk-2 field, unchanged from what the current HO
+  runs used (§5c)
+
+It refuses to overwrite an existing output. `AIS3_MELT_TAG` writes a tagged copy instead.
+The calibration search itself stays in the standalone scripts (§4a–4c).
+
+Expected differences from the current file: no `TransientSolution` from finalize's 0.01-yr
+salvage run (nothing downstream reads it), and `mesh.z` synced (`ho_relaxation` syncs it
+anyway). Not yet verified by a rebuild-and-compare run.
+

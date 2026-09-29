@@ -59,8 +59,8 @@ printed its own step header with `qcat <new-jobid>` before reverting. Never grep
    HO TRACK (ais_0.1.py)                        SSA TRACK (ais_0.1_SSA.py)
    ho_thermal_steadystate -> AIS3_thermal_steadystate.nc     ssa_relaxation_budd -> AIS3_SSA_relaxed.nc
    ho_friction_inv (chunked) -> AIS3_ho_friction_inv.nc        (geometry deliberately NOT relaxed)
-   melt calibration scripts -> AIS3_melt_gamma_tuning.nc     melt_gamma_tuning_ssa + refit scripts
-   restore_floored_thickness.py (patches that file)            finalize_ssa_melt_calibration.py
+   melt_gamma_tuning -> AIS3_melt_gamma_tuning.nc            melt_gamma_tuning_ssa + refit scripts
+     (validated gamma_0=300 + refit deltaT, thickness restored)  finalize_ssa_melt_calibration.py
    ho_relaxation -> AIS3_ho_relaxed.nc                                 -> AIS3_melt_final_ssa.nc
    historical_dhdt_tuning (4 chunks)                          historical_dhdt_tuning_ssa
         -> AIS3_historical_1995_2019{tag}.nc                     -> AIS3_historical_1995_2019_SSA.nc
@@ -137,13 +137,27 @@ qsub -v AIS3_STEPS=ho_friction_inv launch_ho_friction_inv.pbs
   - cf501 from 1e-6 to 1e-4
   - targeted smoothing of the C field
 
-### 5.3 Melt calibration (done: `gamma_0=300`, per-basin refit `deltaT`)
+### 5.3 `melt_gamma_tuning`: apply the validated melt calibration
 
-The `melt_gamma_tuning` step inside `ais_0.1.py` is a per-vertex RMSE sweep, and its result
-is **invalid**: the metric is gamed by turning melt off almost everywhere (§4b). The accepted
-calibration comes from the standalone chain below. All of these scripts read
-`AIS3_ho_friction_inv.nc`. Run them in order, hand-editing `PHASE`/`ROUND`/`STEP` before each
-`qsub`:
+```bash
+qsub -v AIS3_STEPS=melt_gamma_tuning launch_ho_relaxation.pbs      # hugemem 48/1450 driver; no inner solve
+```
+Reads `AIS3_ho_friction_inv.nc` and `AIS3_param.nc`, and writes `AIS3_melt_gamma_tuning.nc`
+(or `AIS3_melt_gamma_tuning{AIS3_MELT_TAG}.nc`). No cluster solve is involved. The step:
+- restores real thickness where the 100 m floor is still in the geometry (formerly
+  `restore_floored_thickness.py`), then runs `sync_mesh_z`
+- configures ismip6 melt with the validated values hard-coded in the step: `gamma_0=300`, the
+  16 per-basin refit `deltaT` values, IMBIE2 basins and the Zhou TF climatology (formerly
+  `finalize_melt_calibration.py`)
+- refuses to overwrite an existing output. Archive the old file with `mv -n` first, or set
+  `AIS3_MELT_TAG`.
+
+Before 2026-09-29 this step ran a per-vertex RMSE sweep of `gamma_0`. That metric is gamed
+by turning melt off almost everywhere (§4b), so the sweep was removed.
+
+**How the values were derived.** Only rerun this chain if you want to redo the calibration
+itself. All of these scripts read `AIS3_ho_friction_inv.nc`. Hand-edit
+`PHASE`/`ROUND`/`STEP` before each `qsub`, then copy the new values into the step:
 
 | # | script (launcher `launch_<name>.pbs`) | control | produces |
 |---|---|---|---|
@@ -151,16 +165,15 @@ calibration comes from the standalone chain below. All of these scripts read
 | 2 | `melt_deltaT_sensitivity_test.py` | `PHASE` submit → analyze | +1 °C uniform shift run (initial per-basin slopes) |
 | 3 | `melt_deltaT_basin_refit.py` | `ROUND` 0…5 with `STEP` (0 = bootstrap + submit round 1; N = analyze round N + submit N+1) | `models/deltaT_refit_state.json`, `execution/AIS3_deltaT_refit_g{i}_r{N}` |
 | 4 | `melt_deltaT_refit_recalibrate.py` | — | J1/J2 scores per candidate. `gamma_0=300` wins, and the J1+J2 Monte Carlo is unanimous. |
-| 5 | `finalize_melt_calibration.py` | — | `models/AIS3_melt_gamma_tuning.nc` (from run `AIS3_deltaT_refit_g1_r5`) |
-| 6 | `restore_floored_thickness.py` | — | patches that file in place, restoring real thin-ice thickness from `AIS3_param.nc` (backup `_prethicknessfix_backup.nc`) |
 
-Each forward solve takes about 4.5 min and costs about 22 SU. If you rerun step 5, rerun
-step 6 afterwards.
+Each forward solve takes about 4.5 min and costs about 22 SU. `finalize_melt_calibration.py` and
+`restore_floored_thickness.py` produced the current production file. The step above replaces
+them.
 
-> **Open (§5c):** `finalize_melt_calibration.py` keeps `md.friction.C` as loaded and never
-> copies over `FrictionC`. Every downstream HO file therefore carries the **chunk-2** friction
-> field, one chunk behind. Grounded C differs by a median of 0.1%, so the effect is probably
-> small. When HO is re-founded, apply the `FrictionC` graft here.
+> **Open (§5c):** the step keeps `md.friction.C` as loaded and does not copy over `FrictionC`,
+> which reproduces what the current HO runs used. Every downstream HO file therefore carries the
+> **chunk-2** friction field, one chunk behind. Grounded C differs by a median of 0.1%, so the
+> effect is probably small. Decide the friction source once the §5c tests are in.
 
 ### 5.4 `ho_relaxation` (rerun 2026-09-29)
 
@@ -234,7 +247,7 @@ the superseded calibration (§4n).
    If B brings HO surface speed down to about the observed speed, softer HO rheology is the
    cause of HO flowing 10–15% too fast (§5a).
 2. Depending on that result, fix HO rheology or friction first (possibly by resuming chunk 4
-   or re-inverting). Then graft `FrictionC` properly (§5.3 note). Then rerun
+   or re-inverting). Then graft `FrictionC` properly (§5.3). Then rerun
    `ho_relaxation` → historical with a new tag.
 3. Still open: the `projection_ssp` scaffolds, the HO `cf101/cf103/cf501` re-sweep, and
    inversion log §7. That includes the Siple Coast trunk deficit and promoting Budd p=q=1
