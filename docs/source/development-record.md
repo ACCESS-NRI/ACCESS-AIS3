@@ -4,7 +4,7 @@ The legacy development dashboard summarizes the latest recorded status, selected
 and figures. It is kept separate from this architecture guide because status changes more
 often than the underlying repository structure.
 
-Open the [development record dashboard](development-record.html). Its detailed source
+Open the [development record dashboard](../index.html). Its detailed source
 records are available in the [inversion worklog](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/inversion_worklog.md),
 [post-inversion pipeline worklog](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/post_inversion_pipeline_worklog.md),
 [run guide](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/run_guide.md), and

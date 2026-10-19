@@ -41,6 +41,7 @@ GitHub Pages after changes to the default branch. On initial setup, the reposito
 **Settings → Pages** source must be set to **GitHub Actions**. Read the Docs configuration
 is also provided for a future hosted Read the Docs project.
 
-The existing development dashboard is published as a separate
-[development record](development-record.md); its figures and worklogs are copied into
-the Pages artifact so its relative links continue to work.
+The existing development dashboard remains the GitHub Pages homepage at `/`. The Sphinx
+guide is published under `/documentation/`, so it adds architecture and workflow
+documentation without replacing the current website. The dashboard's figures and linked
+worklogs are copied into the Pages artifact so its relative links continue to work.

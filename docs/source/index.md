@@ -11,6 +11,9 @@ find the operational guidance.
 
 ## Start here
 
+The [development record dashboard](../index.html) remains the project website homepage;
+this documentation guide is published alongside it.
+
 - [Architecture](architecture.md): the model-building path and the separate HO and SSA tracks.
 - [Repository layout](repository-layout.md): where maintained code, inputs, outputs, and records live.
 - [Workflow map](workflows.md): stage responsibilities, inputs, outputs, and status caveats.
