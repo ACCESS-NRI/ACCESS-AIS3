@@ -33,7 +33,7 @@ jobs:
           cp -a _build/html/. _site/documentation/
           cp docs/index.html _site/index.html
           cp -a docs/figures _site/figures
-          cp docs/inversion_worklog.md docs/post_inversion_pipeline_worklog.md docs/run_guide.md docs/projection_experiments.md _site/
+          cp docs/inversion_worklog.md docs/post_inversion_pipeline_worklog.md docs/run_guide.md _site/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

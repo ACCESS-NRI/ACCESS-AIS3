@@ -46,7 +46,7 @@ The SSA driver has its own downstream chain:
 4. `historical_dhdt_tuning_ssa` — run the historical transient.
 5. `projection_ssp_ssa` — run the SSA projection experiments in chained chunks.
 
-See [projection experiments](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/projection_experiments.md) for projection forcing,
+See the [projection experiment record](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/post_inversion_pipeline_worklog.md#6-projections-ssa-track-setup-and-melt-sensitivity-check) for projection forcing,
 experiment naming, output products, and operational choices. For SSA historical validation
 caveats, see [validation](validation.md).
 
