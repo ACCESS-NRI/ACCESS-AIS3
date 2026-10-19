@@ -29,11 +29,15 @@ jobs:
 
       - name: Package site and development record
         run: |
+          test -s _build/html/index.html
           mkdir -p _site/documentation
           cp -a _build/html/. _site/documentation/
+          test -s _site/documentation/index.html
           cp docs/index.html _site/index.html
           cp -a docs/figures _site/figures
           cp docs/inversion_worklog.md docs/post_inversion_pipeline_worklog.md docs/run_guide.md _site/
+          touch _site/.nojekyll
+          find _site -maxdepth 2 -type f -print | sort
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
