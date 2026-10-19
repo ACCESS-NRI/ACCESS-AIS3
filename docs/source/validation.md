@@ -40,7 +40,7 @@ reported diagnostics to the exact model file and configuration used.
   including corrections and superseded experiments.
 - [Post-inversion pipeline worklog](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/post_inversion_pipeline_worklog.md): HO and SSA
   downstream stages and status history.
-- [Projection experiments](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/projection_experiments.md): forcing design and projection
+- [Projection experiments](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/post_inversion_pipeline_worklog.md#6-projections-ssa-track-setup-and-melt-sensitivity-check): forcing design and projection
   experiment matrix.
 - [Gadi run guide](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/run_guide.md): stage inputs/outputs and operational caveats.
 

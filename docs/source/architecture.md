@@ -59,7 +59,7 @@ inputs, outputs, and restart rules, use the [Gadi run guide](gadi.md) and
 - Model fields and physical parameterization: `config/ais_0.1_param.py`.
 - Cluster submission details: the corresponding `config/launch_*.pbs` launcher.
 - Detailed design history and evidence: `docs/inversion_worklog.md`,
-  `docs/post_inversion_pipeline_worklog.md`, and `docs/projection_experiments.md`.
+   `docs/post_inversion_pipeline_worklog.md` (including the projection experiment record).
 
 The worklogs preserve investigation history and may contain earlier conclusions followed
 by corrections. Use their reconciliation notes and dates; do not treat every historical
