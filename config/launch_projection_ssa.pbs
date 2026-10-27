@@ -9,8 +9,8 @@
 #PBS -P au88
 #PBS -q normal
 #PBS -l walltime=46:00:00
-#PBS -l ncpus=8
-#PBS -l mem=190GB
+#PBS -l ncpus=32
+#PBS -l mem=128GB
 #PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
 #PBS -l wd
 unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
