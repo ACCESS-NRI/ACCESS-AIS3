@@ -520,10 +520,56 @@ if 'historical_dhdt_tuning_ssa' in steps:
 #   AIS3_PROJ_SCENARIO  ctrl | ssp126 | ssp245 | ssp370 | ssp534-over | ssp585   (default ctrl)
 #   AIS3_PROJ_GCM       CESM2-WACCM | MRI-ESM2-0 | ACCESS-CM2 | ...               (not for ctrl)
 #   AIS3_PROJ_FORCING   both | ocean | smb   -- which anomalies are applied        (default both)
-#   AIS3_PROJ_MELT      ref (gamma_0=300 + refit deltaT, AIS3_melt_final_ssa.nc) | g<i> (refit
+#   AIS3_PROJ_MELT      ref (gamma_0=300 + refit deltaT, AIS3_melt_final_ssa.nc) | high (= g7,
+#                       gamma_0=15000, the J1+J2+J3 95th percentile, worklog 6.1) | g<i> (refit
 #                       candidate i of deltaT_refit_state_ssa.json)                (default ref)
 #   AIS3_PROJ_END       final year                         (default 2300, or 2100 for ssp370)
-#   AIS3_PROJ_SMOKE=1   0.2-yr test chunk into *_smoke names, no checkpoint, no chaining
+#   AIS3_PROJ_SMOKE=1   test chunk of AIS3_PROJ_SMOKE_YEARS (default 0.2) yr into *_smoke names, no
+#                       checkpoint, no chaining
+#   AIS3_PROJ_LARMIP_REGION  1-5: LARMIP experiment instead of a scenario -- CTRL forcing plus an
+#                       extra uniform melt (md.basalforcings.melt_anomaly) on every vertex in that
+#                       region of the LARMIP mask. ISSM adds it only under fully floating elements,
+#                       so it follows the grounding line. Runs 200 yr (to 2219).
+#   AIS3_PROJ_LARMIP_MODE    step (default: full amplitude from 2019) | ramp (0 -> amplitude
+#                       linearly over 100 yr, then held 100 yr)
+#   AIS3_PROJ_LARMIP_AMP     extra melt in m ice/yr (default 8)
+#   AIS3_LARMIP_MASK         region mask file (default assets/larmip3/LARMIP3_sectors-1km.nc: 1 Weddell,
+#                       2 East Antarctica, 3 Ross, 4 Amundsen, 5 Peninsula; 0 = no sector): one 2D
+#                       integer variable (AIS3_LARMIP_MASK_VAR, else the first 2D variable) with
+#                       values 1-5, on x/y polar-stereographic or lat/lon coordinates
+#   AIS3_PROJ_COLLAPSE=1     ISMIP7 ice-shelf collapse (fracture path C) for an SSP experiment: the
+#                       GCM/scenario's annual collapse mask (fracture/<ver>/ice_shelf_collapse_mask_*).
+#                       Each chunk is split into sub-solves at every January 1st on which the mask
+#                       changes on the mesh; before each, masked vertices that hold floating ice are
+#                       made ice-free (ice_levelset +1, thickness min_thickness), as are floating pieces
+#                       this cuts off from grounded ice (rigid-body modes otherwise). Only floating ice
+#                       collapses (ISMIP7 README); ice that ungrounds inside the mask goes at the next
+#                       mask change or chunk start. The front stays fixed otherwise (ismovingfront=0):
+#                       the new edge is an ordinary calving front. Removed shelf mass leaves no flux
+#                       term; it shows as a drop in floating ice volume. History gets collapsed_at
+#                       (removal time per vertex). Experiment name gets a _collapse suffix.
+#                       (An extra-melt version, leaving collapsed shelves at 1 m, blew up in its smoke
+#                       test: detached shelf remnants reached 4e9 m/yr, worklog 6.12.)
+#   AIS3_PROJ_COLLAPSE_VER   mask version (default: newest, v2.1 CESM2-WACCM, v2/v1 MRI-ESM2-0; a
+#                       non-default version is added to the name, e.g. _collapse-v2)
+#   AIS3_PROJ_COLLAPSE_SMOKE_SHIFT  smoke tests only: read the mask this many years ahead
+#   AIS3_PROJ_FRICTION=coupledN  sensitivity test (worklog 6.14): effective pressure tied to
+#                       flotation (friction.coupling 2: N = max(rho_i g H - rho_w g max(0,-base),
+#                       limit * rho_i g H)) instead of the fixed prescribed N (coupling 3), so drag
+#                       falls as ice thins towards flotation. friction.coefficient is rescaled ONCE,
+#                       from the initial state (C_new = C_old sqrt(N_old/N_new), Budd p=q=1), so the
+#                       starting basal drag is unchanged; checkpoints carry it on. Name gets _coupledN.
+#   AIS3_PROJ_MELTINTERP / AIS3_PROJ_STATICMELT=1  melt-at-the-grounding-line test (worklog 6.17): ISSM's
+#                       ismip6 melt is set only on fully floating elements, so melt_interpolation alone
+#                       cannot put melt into grounding-line elements. STATICMELT replaces it with the
+#                       default class: a fixed melt field = CTRL's first output (t=2019.1), extended by
+#                       nearest neighbour across the grounding line, + the LARMIP step anomaly.
+#                       MELTINTERP sets groundingline.melt_interpolation (e.g. SubelementMelt1). One
+#                       chunk from the initial state only (AIS3_PROJ_END<=2050); ctrl / LARMIP step.
+#   AIS3_PROJ_FRICTION=coupledN_p3  as coupledN plus nonlinear Budd sliding (p=3, q=1: drag ~
+#                       C^2 N^(1/3) u^(1/3) instead of C^2 N u). C is rescaled once so the drag is
+#                       unchanged at the initial speed: C_new = C_old sqrt(N_old u0^(2/3) / N_new^(1/3)),
+#                       u0 in m/s with a 1 m/yr floor. Name gets _coupledN_p3.
 #
 # Forcing is an anomaly on the reference state the model was calibrated with (worklog 4c):
 #   TF  = TF0  (Zhou climatology, as in the historical run) + [TF_gcm(t)  - TF_gcm(1995-2014)]
@@ -532,8 +578,8 @@ if 'historical_dhdt_tuning_ssa' in steps:
 # elevation feedback (dacabfdz) yet. Anomalies are annual, placed at mid-year; NaN (outside a
 # source grid) -> zero anomaly. Years past the end of a GCM file hold its last year.
 #
-# Chunks: 2019 -> 2050 -> 2100 -> ... -> END, each one PBS submission (~10 h of the 48-cpu
-# solve per 50 yr at the historical run's 12.6 min/model-yr). Each chunk writes a NEW
+# Chunks: 2019 -> 2050 -> 2075 -> 2100 -> ... (25 yr) -> END, each one PBS submission (~5 h of the 48-cpu
+# solve per 25 yr at the historical run's 12.6 min/model-yr). Each chunk writes a NEW
 # checkpoint AIS3_proj_ssa_{exp}_{year}.nc (state adopted from the last step, forcing reset to
 # the static baseline, results stripped) and a per-chunk history npz, then qsubs the next chunk
 # unless models/AIS3_proj_ssa_{exp}.STOP exists. Nothing is overwritten.
@@ -543,6 +589,7 @@ if 'projection_ssp_ssa' in steps:
     print(" FUTURE PROJECTION, SSA (ANOMALY-FORCED, CHUNKED)")
     print("-------------------------------------------------------------")
     import subprocess
+    import re
 
     FORCING_ROOT = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS'
     SMB_PARAM = 'dEBM2-8000m'
@@ -550,12 +597,15 @@ if 'projection_ssp_ssa' in steps:
     START_YEAR = 2019.0
     TIME_STEP = 0.1
     TIME_SENTINEL = 1e9
-    CHUNK_EDGES = [2019.0, 2050.0, 2100.0, 2150.0, 2200.0, 2250.0, 2300.0]
+    # 25-yr chunks after 2050 (2026-10-02): a chunk on a slow solve (ssp585 2050-2100 ran at ~20
+    # steps/h, twice) then still fits its time request instead of losing the whole chunk.
+    CHUNK_EDGES = [2019.0, 2050.0] + [float(y) for y in range(2075, 2301, 25)]
 
     scenario = os.environ.get('AIS3_PROJ_SCENARIO', 'ctrl')
     gcm = os.environ.get('AIS3_PROJ_GCM', '')
     forcing_mode = os.environ.get('AIS3_PROJ_FORCING', 'both')
     melt_choice = os.environ.get('AIS3_PROJ_MELT', 'ref')
+    MELT_MEMBERS = {'high': 'g7'}  # no low member: gamma_0=300 is already the least responsive converged candidate
     end_year = float(os.environ.get('AIS3_PROJ_END', '2100' if scenario == 'ssp370' else '2300'))
     smoke = os.environ.get('AIS3_PROJ_SMOKE', '') == '1'
     assert forcing_mode in ('both', 'ocean', 'smb'), forcing_mode
@@ -569,6 +619,42 @@ if 'projection_ssp_ssa' in steps:
         exp = f'{scenario}_{gtag}_{melt_choice}_{ftag}'  # <scenario>_<gcm>_<melt>_<physics/forcing>
         use_ocean = forcing_mode in ('both', 'ocean')
         use_smb = forcing_mode in ('both', 'smb')
+    larmip_region = os.environ.get('AIS3_PROJ_LARMIP_REGION', '')
+    if larmip_region:
+        assert scenario == 'ctrl', 'LARMIP experiments use CTRL forcing; leave AIS3_PROJ_SCENARIO unset'
+        larmip_mode = os.environ.get('AIS3_PROJ_LARMIP_MODE', 'step')
+        assert larmip_mode in ('step', 'ramp'), larmip_mode
+        larmip_amp = float(os.environ.get('AIS3_PROJ_LARMIP_AMP', '8'))
+        exp = f'larmip_r{int(larmip_region)}_{larmip_mode}' + ('' if larmip_amp == 8.0 else f'_{larmip_amp:g}')
+        end_year = float(os.environ.get('AIS3_PROJ_END', str(START_YEAR + 200.0)))
+    collapse = os.environ.get('AIS3_PROJ_COLLAPSE', '') == '1'
+    if collapse:
+        assert scenario != 'ctrl', 'ISMIP7 collapse masks exist for SSP scenarios only'
+        cands = {}
+        for d in glob.glob(f'{FORCING_ROOT}/{gcm}/{scenario}/fracture/v*/'):
+            fs = glob.glob(f'{d}ice_shelf_collapse_mask_*.nc')
+            if fs:
+                assert len(fs) == 1, fs
+                cands[Path(d).name] = fs[0]
+        if not cands:
+            raise FileNotFoundError(f'no ISMIP7 collapse mask for {gcm}/{scenario}')
+        newest = max(cands, key=lambda v: tuple(int(p) for p in v[1:].split('.')))
+        collapse_ver = os.environ.get('AIS3_PROJ_COLLAPSE_VER') or newest
+        assert collapse_ver in cands, f'collapse mask {collapse_ver} not in {sorted(cands)}'
+        collapse_file = cands[collapse_ver]
+        exp += '_collapse' + ('' if collapse_ver == newest else f'-{collapse_ver}')
+        print(f"-- Collapse mask {collapse_file} ({collapse_ver})")
+    melt_interp = os.environ.get('AIS3_PROJ_MELTINTERP', '')
+    static_melt = os.environ.get('AIS3_PROJ_STATICMELT', '') == '1'
+    if static_melt:
+        exp += '_staticmelt'
+    if melt_interp:
+        exp += '_' + {'SubelementMelt1': 'sem1', 'SubelementMelt2': 'sem2', 'FullMeltOnPartiallyFloating': 'fmp',
+                      'NoMeltOnPartiallyFloating': 'nmp', 'IntrusionMelt': 'intrusion'}[melt_interp]
+    friction_mode = os.environ.get('AIS3_PROJ_FRICTION', '')
+    assert friction_mode in ('', 'coupledN', 'coupledN_p3'), friction_mode
+    if friction_mode:
+        exp += f'_{friction_mode}'
     edges = [e for e in CHUNK_EDGES if e < end_year] + [end_year]
     print(f"-- Experiment {exp}: scenario={scenario} gcm={gcm or '-'} forcing={forcing_mode} "
           f"melt={melt_choice} end={end_year:.0f} smoke={smoke}")
@@ -605,8 +691,9 @@ if 'projection_ssp_ssa' in steps:
               f"max {np.max(np.abs(dH)):.2f} m, grounded vertices {int((oln > 0).sum())}")
 
     def set_static_forcing(md, tf0, tf_depths, smb0):
-        md.basalforcings.tf = [np.append(tf0[k], TIME_SENTINEL).reshape(-1, 1) for k in range(tf0.shape[0])]
-        md.basalforcings.tf_depths = np.asarray(tf_depths, dtype=float).copy()
+        if type(md.basalforcings).__name__ == 'ismip6':  # not for the AIS3_PROJ_STATICMELT test class
+            md.basalforcings.tf = [np.append(tf0[k], TIME_SENTINEL).reshape(-1, 1) for k in range(tf0.shape[0])]
+            md.basalforcings.tf_depths = np.asarray(tf_depths, dtype=float).copy()
         md.smb = pyissm.model.classes.smb.default(md.smb)
         md.smb.mass_balance = np.asarray(smb0, dtype=float).copy()
 
@@ -655,8 +742,10 @@ if 'projection_ssp_ssa' in steps:
     if current_time >= end_year:
         raise SystemExit(f"{exp} already complete (checkpoint at {current_time:.0f})")
     t1 = next(e for e in edges if e > current_time)
+    if os.environ.get('AIS3_PROJ_CHUNK_YEARS'):  # shorter chunks for runs that slow down (worklog 6.16)
+        t1 = min(t1, current_time + float(os.environ['AIS3_PROJ_CHUNK_YEARS']))
     if smoke:
-        t1 = current_time + 0.2
+        t1 = current_time + float(os.environ.get('AIS3_PROJ_SMOKE_YEARS', '0.2'))
     print(f"-- Chunk {current_time:.1f} -> {t1:.1f} from {resume_file}")
     md = pyissm.model.io.load_model(resume_file)
     md.results.TransientSolution = []
@@ -664,15 +753,77 @@ if 'projection_ssp_ssa' in steps:
     assert abs(float(md.timestepping.final_time) - current_time) < 1e-6, \
         f'checkpoint final_time {md.timestepping.final_time} != {current_time}'
 
+    if friction_mode in ('coupledN', 'coupledN_p3'):
+        if resume_file == init_path:
+            assert int(md.friction.coupling) == 3, md.friction.coupling
+            g_, ri_, rw_ = float(md.constants.g), float(md.materials.rho_ice), float(md.materials.rho_water)
+            lim_ = float(md.friction.effective_pressure_limit)
+            H_ = np.asarray(md.geometry.thickness, dtype=float).ravel()
+            base_ = np.asarray(md.geometry.base, dtype=float).ravel()
+            floor_ = lim_ * ri_ * g_ * H_
+            N_old = np.maximum(np.maximum(np.asarray(md.friction.effective_pressure, dtype=float).ravel(), 0.0), floor_)
+            N_new = np.maximum(ri_ * g_ * H_ - rw_ * g_ * np.maximum(-base_, 0.0), floor_)
+            if friction_mode == 'coupledN':
+                ratio = np.sqrt(np.where(N_new > 0, N_old / np.maximum(N_new, 1e-6), 1.0))
+            else:  # drag C^2 N u (p=q=1)  ->  C^2 N^(1/3) u^(1/3) (p=3, q=1), equal at u0
+                assert np.all(np.asarray(md.friction.p) == 1) and np.all(np.asarray(md.friction.q) == 1)
+                yts_ = float(md.constants.yts)
+                u0_ = np.maximum(np.asarray(md.initialization.vel, dtype=float).ravel(), 1.0) / yts_
+                ratio = np.sqrt(N_old * u0_ ** (2.0 / 3.0) / np.maximum(N_new, 1e-6) ** (1.0 / 3.0))
+                md.friction.p = 3.0 * np.ones_like(np.asarray(md.friction.p, dtype=float))
+                md.friction.q = np.ones_like(np.asarray(md.friction.q, dtype=float))
+            C_old = np.asarray(md.friction.coefficient, dtype=float).ravel()
+            md.friction.coefficient = C_old * ratio
+            md.friction.coupling = 2
+            gr_ = (np.asarray(md.mask.ocean_levelset).ravel() > 0) & (np.asarray(md.mask.ice_levelset).ravel() < 0)
+            print(f"   friction {friction_mode}: coupling 3 -> 2, C rescaled once; grounded N_new/N_old median "
+                  f"{np.median(N_new[gr_] / N_old[gr_]):.3f} (p5 {np.percentile(N_new[gr_] / N_old[gr_], 5):.3f}, "
+                  f"p95 {np.percentile(N_new[gr_] / N_old[gr_], 95):.3f}); C factor median {np.median(ratio[gr_]):.3f}")
+        else:
+            assert int(md.friction.coupling) == 2, f'{resume_file}: coupledN checkpoint has coupling {md.friction.coupling}'
+            assert np.all(np.asarray(md.friction.p) == (3.0 if friction_mode == 'coupledN_p3' else 1.0)), 'friction.p'
+            print(f"   friction {friction_mode}: carried over from the checkpoint (coupling 2, rescaled C)")
+
     # -- Melt parameters -------------------------------------------------------------------
     if melt_choice != 'ref':
         import json
         with open(f'{model_dir}/deltaT_refit_state_ssa.json') as f:
-            cand = json.load(f)['candidates'][melt_choice.lstrip('g')]
+            cand = json.load(f)['candidates'][MELT_MEMBERS.get(melt_choice, melt_choice).lstrip('g')]
         md.basalforcings.gamma_0 = float(cand['gamma_0'])
         md.basalforcings.delta_t = np.asarray(cand['history'][-1]['delta_t'], dtype=float)
     print(f"   melt: gamma_0={float(md.basalforcings.gamma_0)}, deltaT range "
           f"[{np.min(md.basalforcings.delta_t):.3f}, {np.max(md.basalforcings.delta_t):.3f}]")
+
+    if larmip_region:
+        from scipy.interpolate import NearestNDInterpolator
+        mask_path = os.environ.get('AIS3_LARMIP_MASK', '/g/data/au88/jh7060/ACCESS-AIS3/assets/larmip3/LARMIP3_sectors-1km.nc')
+        ds_m = xr.open_dataset(mask_path)
+        mvar = os.environ.get('AIS3_LARMIP_MASK_VAR') or next(v for v in ds_m.data_vars if ds_m[v].ndim == 2)
+        mvals = ds_m[mvar].values.astype(float)
+        if 'x' in ds_m[mvar].dims and 'y' in ds_m[mvar].dims:
+            mx, my = np.meshgrid(ds_m['x'].values, ds_m['y'].values)
+        else:
+            lat, lon = ds_m['lat'].values, ds_m['lon'].values
+            if lat.ndim == 1:
+                lon, lat = np.meshgrid(lon, lat)
+            mx, my = pyissm.tools.general.ll_to_xy(lat, lon, -1)
+        ok = np.isfinite(mvals)
+        region_v = np.rint(NearestNDInterpolator(np.column_stack([mx[ok], my[ok]]), mvals[ok])(
+            np.asarray(md.mesh.x).ravel(), np.asarray(md.mesh.y).ravel())).astype(int)
+        in_r = region_v == int(larmip_region)
+        fl = np.asarray(md.mask.ocean_levelset).ravel() < 0
+        print(f"   LARMIP region {larmip_region} ({mask_path}:{mvar}): {int(in_r.sum())} vertices, "
+              f"{int((in_r & fl).sum())} currently floating; vertices per region "
+              + ', '.join(f'{r}:{int((region_v == r).sum())}' for r in range(1, 6)))
+        assert (in_r & fl).sum() > 0, 'no floating ice in this LARMIP region'
+        if larmip_mode == 'step':
+            md.basalforcings.melt_anomaly = np.where(in_r, larmip_amp, 0.0)
+        else:  # 0 at the start, amplitude after 100 yr, held to 200 yr (ISSM interpolates linearly)
+            ma = np.zeros((nv + 1, 3))
+            ma[:nv, 1] = ma[:nv, 2] = np.where(in_r, larmip_amp, 0.0)
+            ma[nv] = [START_YEAR, START_YEAR + 100.0, START_YEAR + 200.0]
+            md.basalforcings.melt_anomaly = ma
+        print(f"   melt_anomaly: {larmip_mode}, {larmip_amp:g} m/yr in region {larmip_region}")
 
     # -- Forcing for this chunk --------------------------------------------------------------
     years = np.arange(int(np.floor(current_time)), int(np.ceil(t1)) + 1)
@@ -689,7 +840,10 @@ if 'projection_ssp_ssa' in steps:
         files = _files_for(f'{FORCING_ROOT}/{gcm_}/{scen}/ocean/tf/v3/tf_AIS_*.nc', _tf_years, y0, y1)
         if not files:
             raise FileNotFoundError(f'no TF files for {gcm_}/{scen} {y0}-{y1}')
-        da = xr.open_mfdataset(files, combine='by_coords')['tf']
+        # cftime throughout: proleptic-Gregorian files (MRI-ESM2-0) otherwise decode to pandas timestamps
+        # before ~2262 and cftime after, which open_mfdataset cannot combine.
+        da = xr.open_mfdataset(files, combine='by_coords',
+                               decode_times=xr.coders.CFDatetimeCoder(use_cftime=True))['tf']
         return da.sel(time=(da['time.year'] >= y0) & (da['time.year'] <= y1))
 
     def _smb_file(gcm_, scen, yr):
@@ -716,8 +870,8 @@ if 'projection_ssp_ssa' in steps:
             clim = _load_tf(gcm, 'historical', CLIM_Y0, CLIM_Y1)
             assert clim.sizes['time'] == CLIM_Y1 - CLIM_Y0 + 1, clim.sizes
             clim = clim.mean('time', skipna=True).to_numpy()
-            np.save(clim_path + '.tmp.npy', np.stack([to_mesh(clim[k]) for k in range(clim.shape[0])]))
-            os.replace(clim_path + '.tmp.npy', clim_path)
+            np.save(clim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', np.stack([to_mesh(clim[k]) for k in range(clim.shape[0])]))
+            os.replace(clim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', clim_path)
         tf_clim = np.load(clim_path)
         tf_da = _load_tf(gcm, scenario, int(years[0]), int(years[-1]))
         tf_years = tf_da['time.year'].values
@@ -750,8 +904,8 @@ if 'projection_ssp_ssa' in steps:
             print(f"   building {gcm} {SMB_PARAM} historical SMB climatology {CLIM_Y0}-{CLIM_Y1}...")
             acc = [_smb_year_myr(gcm, 'historical', y, rho_ice, yts) for y in range(CLIM_Y0, CLIM_Y1 + 1)]
             assert all(a is not None for a in acc), 'missing historical acabf years'
-            np.save(sclim_path + '.tmp.npy', to_mesh(np.mean(acc, axis=0)))
-            os.replace(sclim_path + '.tmp.npy', sclim_path)
+            np.save(sclim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', to_mesh(np.mean(acc, axis=0)))
+            os.replace(sclim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', sclim_path)
         smb_clim = np.load(sclim_path)
         mb = np.empty((nv + 1, years.size))
         last_a, last_src = None, None
@@ -771,6 +925,111 @@ if 'projection_ssp_ssa' in steps:
     else:
         md.smb.mass_balance = smb0.copy()
 
+    if melt_interp:
+        md.groundingline.melt_interpolation = melt_interp
+    if static_melt:
+        from scipy.spatial import cKDTree
+        assert resume_file == init_path and t1 <= 2050.0 + 1e-6, 'STATICMELT test: one chunk from the initial state'
+        assert not (use_ocean or use_smb) and (not larmip_region or larmip_mode == 'step'), 'STATICMELT: ctrl/LARMIP step'
+        m0 = np.asarray(np.load(f'{model_dir}/AIS3_proj_ssa_ctrl_2019-2050_history.npz')['melt'][0], dtype=float)
+        xm, ym = np.asarray(md.mesh.x).ravel(), np.asarray(md.mesh.y).ravel()
+        src = (m0 != 0) & (np.asarray(md.mask.ocean_levelset).ravel() < 0)
+        m0 = m0[src][cKDTree(np.column_stack([xm[src], ym[src]])).query(np.column_stack([xm, ym]))[1]]
+        anom = np.nan_to_num(np.asarray(md.basalforcings.melt_anomaly, dtype=float).ravel()) if larmip_region else 0.0
+        bf = pyissm.model.classes.basalforcings.default()
+        bf.groundedice_melting_rate = np.asarray(md.basalforcings.groundedice_melting_rate, dtype=float).copy()
+        bf.geothermalflux = np.asarray(md.basalforcings.geothermalflux, dtype=float).copy()
+        bf.floatingice_melting_rate = m0 + anom
+        md.basalforcings = bf
+        fl_ = np.asarray(md.mask.ocean_levelset).ravel() < 0
+        print(f"   STATICMELT: default basal forcing, CTRL t=2019.1 melt extended past the GL; floating-vertex "
+              f"mean {np.mean(m0[fl_]):.2f} m/yr (+ anomaly mean {np.mean(np.broadcast_to(anom, m0.shape)[fl_]):.2f}); "
+              f"melt_interpolation {md.groundingline.melt_interpolation}")
+
+    # -- ISMIP7 ice-shelf collapse (path C): mask per year, applied between sub-solves -----------
+    if collapse:
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+        ds_c = xr.open_dataset(collapse_file, decode_times=False)
+        assert np.allclose(ds_c['x'].values, ref_grid['x'].values) and \
+            np.allclose(ds_c['y'].values, ref_grid['y'].values), 'collapse mask grid != TF grid'
+        cyears = ds_c['time'].values.astype(int)
+        # Smoke tests only: read the mask this many years ahead (the 2019 mask is ice-free on our mesh).
+        cshift = int(os.environ.get('AIS3_PROJ_COLLAPSE_SMOKE_SHIFT', '0'))
+        assert cshift == 0 or smoke, 'AIS3_PROJ_COLLAPSE_SMOKE_SHIFT is for smoke tests only'
+        fl = (np.asarray(md.mask.ocean_levelset).ravel() < 0) & (np.asarray(md.mask.ice_levelset).ravel() < 0)
+        segs = []  # (first year, mesh mask), one per year in which the mask changes on the mesh
+        for yr in years:
+            src = int(yr + cshift) if yr + cshift in cyears else int(cyears[cyears <= yr + cshift].max())
+            grid = ds_c['mask'].sel(time=src).values
+            on = np.nan_to_num(to_mesh(grid.astype(float)), nan=0.0) >= 0.5
+            if segs and np.array_equal(on, segs[-1][1]):
+                continue
+            if segs and (segs[-1][1] & ~on).any():
+                print(f"      WARNING collapse mask {src}: {int((segs[-1][1] & ~on).sum())} vertices un-collapse")
+            segs.append((int(yr), on))
+            print(f"      collapse mask {yr} (from {src}): {int(on.sum())} vertices, {int((on & fl).sum())} "
+                  f"floating ice at chunk start; {int(grid.sum()) * 64} km^2 on the 8 km grid")
+        elements0 = np.asarray(md.mesh.elements).astype(int) - 1
+        fric0 = np.asarray(md.friction.coefficient, dtype=float).ravel()
+        collapsed_at = np.full(nv, np.nan)
+
+        def _detached(ice, oln):
+            """Ice vertices outside every piece that holds an anchoring element (fully grounded, basal
+            friction coefficient > 0 at all three vertices), where pieces are fully-ice elements joined
+            across shared edges. Vertex-only joins, partly grounded elements and frictionless grounded
+            spots (pinning points that were floating in the inversion) do not anchor: such pieces
+            reached 1e15-1e17 m/yr in smoke 180862834."""
+            ie = np.where(np.all(ice[elements0], axis=1))[0]
+            e = elements0[ie]
+            ed = np.sort(np.concatenate([e[:, [0, 1]], e[:, [1, 2]], e[:, [2, 0]]]), axis=1)
+            key = ed[:, 0].astype(np.int64) * nv + ed[:, 1]
+            owner = np.tile(np.arange(ie.size), 3)
+            order = np.argsort(key, kind='stable')
+            same = key[order][1:] == key[order][:-1]
+            a_, b_ = owner[order][:-1][same], owner[order][1:][same]
+            _, lab = connected_components(coo_matrix((np.ones(a_.size), (a_, b_)), shape=(ie.size, ie.size)),
+                                          directed=False)
+            anchored = np.zeros(lab.max() + 1, bool)
+            np.logical_or.at(anchored, lab, np.all((oln[e] > 0) & (fric0[e] > 0), axis=1))
+            held = np.zeros(nv, bool)
+            held[e[anchored[lab]].ravel()] = True
+            return ice & ~held
+
+        def apply_collapse(md, on, t):
+            """Make masked floating ice ice-free (ice_levelset +1, thickness min_thickness), together with
+            the unanchored pieces (see _detached) this leaves, which would otherwise have rigid-body
+            modes. With ismovingfront=0 the new edge is an ordinary calving front."""
+            il = np.asarray(md.mask.ice_levelset, dtype=float).ravel().copy()
+            oln = np.asarray(md.mask.ocean_levelset, dtype=float).ravel()
+            ice = il < 0
+            cut = on & ice & (oln < 0)
+            # every unanchored piece goes, also when nothing is cut this year: pieces left away from
+            # the cut (grounding-line migration between years) gave 1e15 m/yr rigid-body modes and the
+            # 2089 failures; removing all of them (113 vertices) gave a normal solve (worklog 6.15)
+            berg = _detached(ice & ~cut, oln)
+            gone = cut | berg
+            if not gone.any():
+                print(f"      collapse at {t:.1f}: no masked floating ice, no unanchored ice")
+                return
+            il[gone] = 1.0
+            md.mask.ice_levelset = il
+            H = np.asarray(md.geometry.thickness, dtype=float).ravel().copy()
+            bed = np.asarray(md.geometry.bed, dtype=float).ravel()
+            H[gone] = float(md.masstransport.min_thickness)
+            base = np.asarray(md.geometry.base, dtype=float).ravel().copy()
+            # removed vertices take the flotation state of 1 m ice (removed grounded pieces mostly float)
+            hfl = -H[gone] * float(md.materials.rho_ice) / float(md.materials.rho_water)
+            floats = bed[gone] < hfl
+            base[gone] = np.where(floats, hfl, bed[gone])
+            oln_new = oln.copy()
+            oln_new[gone] = np.where(floats, -1.0, np.where(oln[gone] > 0, oln[gone], 1.0))
+            md.mask.ocean_levelset = oln_new
+            md.geometry.thickness, md.geometry.base, md.geometry.surface = H, base, base + H
+            collapsed_at[gone & np.isnan(collapsed_at)] = t
+            print(f"      collapse at {t:.1f}: {int(cut.sum())} masked floating ice vertices + {int(berg.sum())} "
+                  f"unanchored -> ice-free; ice vertices left {int((il < 0).sum())}")
+
     # -- Solver setup, same physics as historical_dhdt_tuning_ssa -------------------------------
     md.inversion.iscontrol = 0
     md.verbose.solution = 1
@@ -787,24 +1046,144 @@ if 'projection_ssp_ssa' in steps:
         'IceVolume', 'IceVolumeAboveFloatation', 'GroundedArea', 'FloatingArea',
         'TotalSmb', 'TotalFloatingBmb', 'TotalGroundedBmb', 'GroundinglineMassFlux', 'IcefrontMassFlux',
     ]
-    md.timestepping.start_time = current_time
-    md.timestepping.final_time = t1
     md.timestepping.time_step = TIME_STEP
     md.settings.output_frequency = 1 if smoke else int(round(1.0 / TIME_STEP))  # annual
     md.settings.solver_residue_threshold = 1e-3
+    if collapse:  # the 2089 collapse sub-solve was rejected at residue 1.9e-3 (twice), worklog 6.15
+        md.settings.solver_residue_threshold = float(os.environ.get('AIS3_PROJ_RESIDUE', '1e-2'))
 
     run_name = f'AIS3_proj_ssa_{exp}_{current_time:.0f}-{t1:.0f}' + ('_smoke' if smoke else '')
-    md.miscellaneous.name = run_name
     md.cluster = cluster
-    md.cluster.time = 60 * (1 if smoke else 24)
-    md.settings.waitonlock = 60 * (4 if smoke else 40)  # includes the inner job's queue wait
+    # Wait budget (includes the inner job's queue wait) = this driver's own walltime minus 90 min
+    # for loading results, the history file and the checkpoint save.
+    wall_min = 46 * 60
+    try:
+        qs = subprocess.run(['qstat', '-f', os.environ['PBS_JOBID']], capture_output=True, text=True).stdout
+        hh, mm, _ = re.search(r'Resource_List.walltime = (\d+):(\d+):(\d+)', qs).groups()
+        wall_min = int(hh) * 60 + int(mm)
+    except (KeyError, AttributeError):
+        pass
 
-    print(f"-- Submitting and waiting on {run_name}...")
-    md = pyissm.model.execute.solve(md, 'Transient', load_only=False, runtime_name=False)
+    # One solve per chunk; with collapse, one per stretch between January-1st mask changes, the
+    # collapse applied to the adopted state before each. Each sub-solve gets only the forcing
+    # columns around its own years (the full chunk's TF is ~10 GB).
+    sub_edges = [current_time] + ([float(y) for y, _ in segs if current_time < y < t1] if collapse else []) + [t1]
+    tf_full, mb_full = getattr(md.basalforcings, 'tf', None), md.smb.mass_balance  # no tf: STATICMELT test
 
-    # -- History (annual) and scalars -------------------------------------------------------
-    ts = md.results.TransientSolution
-    steps_list = ts if isinstance(ts, list) else [ts]
+    def _window(a, s0, s1):
+        a = np.asarray(a)
+        if a.ndim != 2 or a.shape[1] < 2:
+            return a
+        keep = (a[-1] >= s0 - 1.0) & (a[-1] <= s1 + 1.0)
+        return a[:, keep] if keep.any() else a
+
+    import time as _time
+    t_wall0 = _time.time()
+    # Inner walltime floor per collapse sub-solve: 4 h until 2026-10-23, when 2148 used 3h42 (years
+    # after ~2145 hit the iteration cap on 6-9 of 10 steps, worklog 6.18)
+    collapse_inner_min = int(os.environ.get('AIS3_PROJ_COLLAPSE_INNER_MIN', '480'))
+    steps_list = []
+    failed = False
+
+    def _solve_watched(md, budget_min):
+        """solve() without pyissm's blind lock-file wait (collapse runs only, for now): submit, then
+        poll for the lock file AND for the end of the inner job (the PBS usage footer in its outlog).
+        A job that has ended without writing its lock file has failed; pyissm would wait out the whole budget (a NaN at
+        2059 left the collapse driver idle for 23 h, worklog 6.12). Returns (md, ok)."""
+        # waitonlock must stay > 0 in the marshalled model -- ISSM writes the lock file only then (the
+        # first version set it to 0 and every solve looked failed); batch=True makes solve() return
+        # straight after qsub instead of running its own wait.
+        md.settings.waitonlock = max(1, int(budget_min))
+        # a reused run directory may hold a stale lock (would load old results) or a finished outlog
+        # (would look like a failure): set them aside first (renamed, not deleted)
+        for ext in ('lock', 'outlog', 'errlog', 'outbin'):
+            f = f'{md.cluster.executionpath}/{md.miscellaneous.name}/{md.miscellaneous.name}.{ext}'
+            if os.path.exists(f):
+                os.rename(f, f'{f}.prev{int(_time.time())}')
+        md = pyissm.model.execute.solve(md, 'Transient', batch=True, load_only=False, runtime_name=False)
+        rdir = f'{md.cluster.executionpath}/{md.private.runtimename}'
+        lock = f'{rdir}/{md.miscellaneous.name}.lock'
+        outlog = f'{rdir}/{md.miscellaneous.name}.outlog'  # PBS appends its usage footer when the job ends
+        t_start, ended = _time.time(), 0
+        while True:
+            _time.sleep(60)
+            if os.path.exists(lock):
+                break
+            try:
+                ended = ended + 1 if 'Exit Status:' in open(outlog, errors='replace').read()[-4000:] else 0
+            except OSError:
+                ended = 0
+            if ended >= 2:  # job over for two polls and still no lock file
+                print(f"   inner job for {md.miscellaneous.name} ended without a lock file -- failed; see {outlog}")
+                return md, False
+            if (_time.time() - t_start) / 60 > budget_min:
+                print(f"   wait budget {budget_min} min used up for {md.miscellaneous.name}")
+                return md, False
+        return pyissm.model.execute.load_results_from_cluster(md), True
+    for s0, s1 in zip(sub_edges[:-1], sub_edges[1:]):
+        if steps_list:  # carry the previous sub-solve's end state over
+            # Not enough driver time left for another sub-solve (inner time + 1 h queue allowance):
+            # end the chunk at s0 instead, so it still writes its checkpoint and queues the next one.
+            need = max(collapse_inner_min, 60 * int(np.ceil(10.0 * (s1 - s0) * 12.6 / 60))) + 60
+            if wall_min - 90 - (_time.time() - t_wall0) / 60 < need:
+                print(f"-- driver time short for {s0:.1f}-{s1:.1f}: ending this chunk at {s0:.1f}")
+                t1 = s0
+                break
+            adopt_final_state_2d(md)
+            md.results.TransientSolution = []
+        sub_name = run_name if len(sub_edges) == 2 else f'{run_name}_sub{s0:.1f}'
+        if collapse:
+            apply_collapse(md, [m for y, m in segs if y <= s0 + 1e-9][-1], s0)
+        if len(sub_edges) > 2:
+            if tf_full is not None:
+                md.basalforcings.tf = [_window(a, s0, s1) for a in tf_full]
+            md.smb.mass_balance = _window(mb_full, s0, s1)
+        md.timestepping.start_time = s0
+        md.timestepping.final_time = s1
+        md.miscellaneous.name = sub_name
+        # Inner solve: 3x the historical run's 12.6 min per model year (20 h for 2019-2050, 16 h for a
+        # 25-yr chunk), enough for a solve running at ~1/3 of normal speed.
+        # AIS3_PROJ_TIME_FACTOR overrides the 3x, for reruns after slow-node walltime kills (worklog 6.14)
+        md.cluster.time = max(60, 60 * int(np.ceil(float(os.environ.get('AIS3_PROJ_TIME_FACTOR', '3'))
+                                                   * (s1 - s0) * 12.6 / 60)))
+        if collapse:  # steps after a large collapse hit the 100-iteration cap (~12 min each, smoke 180869837)
+            md.cluster.time = max(collapse_inner_min, 60 * int(np.ceil(10.0 * (s1 - s0) * 12.6 / 60)))
+        md.settings.waitonlock = max(30, int(wall_min - 90 - (_time.time() - t_wall0) / 60))
+        print(f"   inner solve time {md.cluster.time} min; wait budget {md.settings.waitonlock} min")
+        print(f"-- Submitting and waiting on {sub_name}...")
+        if collapse:
+            md, ok = _solve_watched(md, md.settings.waitonlock)
+            if not ok:  # NaNs here were not reproducible (2059 failed once, passed on rerun): retry once
+                budget = max(30, int(wall_min - 90 - (_time.time() - t_wall0) / 60))
+                if budget > md.cluster.time + 60:
+                    print(f"-- retrying {sub_name} once")
+                    md, ok = _solve_watched(md, budget)
+            if not ok:
+                # Keep what this chunk did: end it at s0 with a checkpoint (the state the failed
+                # solve started from, collapse at s0 already applied) and do not chain.
+                failed, t1 = True, s0
+                print(f"-- {sub_name} failed: ending this chunk at {s0:.1f}, chain stopped")
+                if not steps_list:
+                    raise SystemExit(f"{sub_name}: first sub-solve of the chunk failed -- nothing to save")
+                break
+        else:
+            md = pyissm.model.execute.solve(md, 'Transient', load_only=False, runtime_name=False)
+
+        ts = md.results.TransientSolution
+        # md.results.TransientSolution is a pyissm `solution` holding a `.steps` list; attribute access
+        # on the solution itself returns every step stacked, not one step.
+        sub_steps = list(ts.steps) if hasattr(ts, 'steps') else (ts if isinstance(ts, list) else [ts])
+        sub_times = np.array([float(getattr(s, 'time', np.nan)) for s in sub_steps])
+        # The solve must have reached s1. A solve killed at its walltime leaves a partial outbin that
+        # pyissm loads without complaint; adopting its last step and saving it as t1 silently skipped
+        # 19, 13 and 4 model years in three runs (worklog 6.10). Stop here instead: no history, no
+        # checkpoint, no next chunk.
+        if sub_times.size == 0 or abs(sub_times[-1] - s1) > 1e-6:
+            raise SystemExit(f"{sub_name}: solve ended at t={sub_times[-1] if sub_times.size else 'none'}, not {s1} "
+                             f"(inner job killed or failed?) -- no checkpoint written, chain stopped")
+        steps_list += sub_steps
+    run_name = f'AIS3_proj_ssa_{exp}_{current_time:.0f}-{t1:.0f}' + ('_smoke' if smoke else '')
+    md.miscellaneous.name = run_name
     times = np.array([float(getattr(s, 'time', np.nan)) for s in steps_list])
 
     def _stack(field):
@@ -818,6 +1197,7 @@ if 'projection_ssp_ssa' in steps:
     np.savez(hist_path, times=times, thickness=_stack('Thickness'),
              ocean_levelset=_stack('MaskOceanLevelset'), vel=_stack('Vel'),
              melt=_stack('BasalforcingsFloatingiceMeltingRate'), smb=_stack('SmbMassBalance'),
+             **({'collapsed_at': collapsed_at} if collapse else {}),
              **{f'scalar_{n}': v for n, v in scalars.items()})
     rho_sw, A_OCEAN = 1028.0, 3.625e14
     vaf = scalars['IceVolumeAboveFloatation']
@@ -831,17 +1211,28 @@ if 'projection_ssp_ssa' in steps:
     if smoke:
         print("-- Smoke test complete (no checkpoint, no chaining).")
     else:
-        adopt_final_state_2d(md)
+        if not failed:  # after a failed sub-solve md already holds the adopted state at t1 = s0
+            adopt_final_state_2d(md)
+        else:  # ...but its timestepping still says the failed sub-solve's s0 -> s1
+            md.timestepping.start_time = md.timestepping.final_time = t1
         md.results.TransientSolution = []
         set_static_forcing(md, tf0, tf_depths0, smb0)
         ckpt = f'{model_dir}/AIS3_proj_ssa_{exp}_{t1:.0f}.nc'
         pyissm.model.io.save_model(md, ckpt + '.tmp')
         os.replace(ckpt + '.tmp', ckpt)
         print(f"   saved checkpoint {ckpt}")
+        if failed:
+            raise SystemExit(f"{exp}: sub-solve from {t1:.1f} failed; checkpoint {ckpt} holds its starting state "
+                             f"-- chain stopped for diagnosis")
         if t1 < end_year and not os.path.exists(stop_path):
             env = ','.join(f'{k}={os.environ[k]}' for k in
                            ('AIS3_STEPS', 'AIS3_PROJ_SCENARIO', 'AIS3_PROJ_GCM', 'AIS3_PROJ_FORCING',
-                            'AIS3_PROJ_MELT', 'AIS3_PROJ_END') if os.environ.get(k))
+                            'AIS3_PROJ_MELT', 'AIS3_PROJ_END', 'AIS3_PROJ_LARMIP_REGION',
+                            'AIS3_PROJ_LARMIP_MODE', 'AIS3_PROJ_LARMIP_AMP', 'AIS3_LARMIP_MASK',
+                            'AIS3_LARMIP_MASK_VAR', 'AIS3_PROJ_COLLAPSE', 'AIS3_PROJ_COLLAPSE_VER',
+                            'AIS3_PROJ_FRICTION', 'AIS3_PROJ_TIME_FACTOR', 'AIS3_PROJ_RESIDUE', 'AIS3_PROJ_COLLAPSE_INNER_MIN',
+                            'AIS3_PROJ_CHUNK_YEARS')
+                       if os.environ.get(k))
             log = f'/g/data/au88/jh7060/ACCESS-AIS3/config/logs/proj_ssa_{exp}_{t1:.0f}-next'
             out = subprocess.run(['qsub', '-v', env, '-N', f'proj_{exp}'[:15], '-o', log + '.out', '-e', log + '.err',
                                   '/g/data/au88/jh7060/ACCESS-AIS3/config/launch_projection_ssa.pbs'],

@@ -103,6 +103,43 @@ def adopt_final_state(md):
           f"{100 * np.mean((ol >= 0) != (old_ol >= 0)):.3f}% of vertices; initialization set: {set_vel}")
 
 
+def rescale_rheology_B_d2(md, B_ref_2d):
+    """Rescale md's 3D rheology_B column by column to a 2D reference B, keeping the vertical
+    profile ("D2", worklog 5c).
+
+    Grounded columns match the deformation-weighted column B, B_eff = (sum w B^-n / sum w)^(-1/n)
+    with w = (1 - sigma)^(n+1) (sigma 0 at the bed), so the soft basal layers count as they do for
+    shear flow; floating columns match the plain column mean (plug flow). HO's steady-state
+    temperature makes its basal ice much softer than the reference, which made HO flow ~9% too
+    fast; with this rescale a diagnostic solve gave grounded surface speed / observed median 1.00.
+    Idempotent: a column already matching the reference gets scale 1.
+    """
+    nv = md.mesh.numberofvertices
+    nvb = int(md.mesh.numberofvertices2d)
+    nl = nv // nvb
+    B_ref_2d = np.asarray(B_ref_2d, dtype=float).ravel()
+    assert B_ref_2d.size == nvb, f'reference B has {B_ref_2d.size} values, base layer has {nvb}'
+    z = np.asarray(md.mesh.z, dtype=float).ravel().reshape(nl, nvb)
+    span = z[-1] - z[0]
+    sig = (z - z[0]) / np.where(np.abs(span) > 1e-9, span, 1.0)[None, :]
+    w = np.diff(sig, axis=0)
+    wsum = w.sum(axis=0)
+    Bh = np.asarray(md.materials.rheology_B, dtype=float).ravel().reshape(nl, nvb)
+    n = float(np.unique(np.asarray(md.materials.rheology_n).ravel())[0])
+    B_mean = (0.5 * (Bh[1:] + Bh[:-1]) * w).sum(axis=0) / np.maximum(wsum, 1e-12)
+    wdef = (1.0 - sig) ** (n + 1.0)
+    wd = 0.5 * (wdef[1:] + wdef[:-1]) * w
+    A_mid = 0.5 * (Bh[1:] ** -n + Bh[:-1] ** -n)
+    B_eff = ((wd * A_mid).sum(axis=0) / np.maximum(wd.sum(axis=0), 1e-30)) ** (-1.0 / n)
+    grounded = np.asarray(md.mask.ocean_levelset).ravel()[:nvb] > 0
+    scale = np.where(grounded, B_ref_2d / B_eff, B_ref_2d / B_mean)
+    scale = np.where(wsum > 0, scale, 1.0)
+    md.materials.rheology_B = (Bh * scale[None, :]).ravel()
+    print(f"   D2 rheology rescale: grounded median {np.median(scale[grounded]):.3f} "
+          f"(p10 {np.percentile(scale[grounded], 10):.3f}, p90 {np.percentile(scale[grounded], 90):.3f}), "
+          f"floating median {np.median(scale[~grounded]):.3f}")
+
+
 def friction_law_info(md):
     """Return (control_parameter, field_attr, min_bound, max_bound) for md's friction law.
 
@@ -2000,7 +2037,14 @@ if 'ho_thermal_steadystate' in steps:
         print(f"   Mean temperature: {np.nanmean(T):.2f} K")
 
     print(f"-- Recomputing rheology_B from the depth-resolved temperature...")
+    # FIX (2026-10-02, worklog 5c): this used to overwrite B everywhere, losing the inverted shelf
+    # rheology, and left HO's soft basal ice ~9% too fast. Keep the temperature-based vertical
+    # profile but rescale each column to the input model's B (grounded: cuffey of RACMO surface T;
+    # floating: inverted shelf B) with the D2 weighting.
+    _nvb = int(md.mesh.numberofvertices2d)
+    _B_ref_2d = np.asarray(md.materials.rheology_B, dtype=float).ravel()[:_nvb].copy()
     md.materials.rheology_B = pyissm.tools.materials.cuffey(md.initialization.temperature)
+    rescale_rheology_B_d2(md, _B_ref_2d)
 
     if save:
         print(f"\nSaving thermal steady-state model to {model_dir}/AIS3_thermal_steadystate.nc")
@@ -2425,6 +2469,17 @@ if 'ho_relaxation' in steps:
     md.smb.mass_balance = racmo_mean_smb(md, 1979, 1994)
     sync_mesh_z(md)
 
+    # FIX (2026-10-02, worklog 5c): the melt-tuned model still carries the thermal step's
+    # unscaled B (built before the thermal-step fix above). Apply the D2 rescale against the HO
+    # track's pre-thermal B (AIS3_inverted.nc); a no-op once the chain is rebuilt with the fix.
+    print(f"-- Rescaling rheology_B (D2) to AIS3_inverted.nc's B...")
+    _mdi = pyissm.model.io.load_model(f'{model_dir}/AIS3_inverted.nc')
+    _nvb = int(md.mesh.numberofvertices2d)
+    assert np.allclose(np.asarray(_mdi.mesh.x).ravel(), np.asarray(md.mesh.x).ravel()[:_nvb]), \
+        'AIS3_inverted.nc mesh != HO base layer'
+    rescale_rheology_B_d2(md, np.asarray(_mdi.materials.rheology_B, dtype=float).ravel())
+    del _mdi
+
     print(f"-- Assigning cluster and updating settings...")
     md.miscellaneous.name = 'AIS3_ho_relaxed'
     # BUGFIX (2026-09-02, found before ever running this step): the shared default `cluster`
@@ -2573,6 +2628,9 @@ if 'historical_dhdt_tuning' in steps:
         # marshalling's numpy-elementwise scaling step). Same fix.
         md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
         sync_mesh_z(md)
+        # The relaxation's own 50-step history rides along in this file; its end state is already
+        # in md.geometry (adopt_final_state, 4z), so drop it before marshalling.
+        md.results.TransientSolution = []
         current_time = FULL_START_TIME
 
     chunk_final_time = min(current_time + CHUNK_YEARS, FULL_END_TIME)
@@ -2595,6 +2653,9 @@ if 'historical_dhdt_tuning' in steps:
     md.timestepping.start_time = current_time
     md.timestepping.final_time = chunk_final_time
     md.timestepping.time_step  = 0.1   # years
+    # Annual output (2026-09-30): every analysis of this run uses yearly states, and loading
+    # every 0.1-yr 3D step made the driver job need 500-700 GB on hugemem.
+    md.settings.output_frequency = 10
 
     print(f"-- Building time-varying SMB from RACMO 1995-2019 annual means...")
     # smb.arma (pyissm/model/classes/smb.py) is the more sophisticated option (basin-wise
@@ -2690,8 +2751,11 @@ if 'historical_dhdt_tuning' in steps:
     _hist_path = (f'{model_dir}/AIS3_historical_1995_2019{HIST_TAG}_history_'
                   f'{current_time:.0f}-{chunk_final_time:.0f}.npz')
     _thick_hist = _hist('Thickness')
+    _times = (np.array([float(t.time) for t in _ts]) if isinstance(_ts, list)
+              else np.asarray(getattr(_ts, 'time'), dtype=float).ravel())
+    assert _times.size == _thick_hist.shape[0], (_times.size, _thick_hist.shape)
     np.savez(_hist_path,
-             times=current_time + md.timestepping.time_step * np.arange(1, _thick_hist.shape[0] + 1),
+             times=_times,
              thickness=_thick_hist, ocean_levelset=_hist('MaskOceanLevelset'),
              initial_thickness=H_start_for_history.astype(np.float32))
     print(f"Saved per-step history to {_hist_path}")
@@ -2721,8 +2785,15 @@ if 'historical_dhdt_tuning' in steps:
         # chunk's own TransientSolution[0] -- that only spans the LAST chunk (e.g.
         # 2013-2019), since each chunk's results are checkpointed independently rather than
         # accumulated into one full-history object (see the chunking note above).
-        md_start_ref = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_relaxed.nc')
-        H0 = np.asarray(md_start_ref.geometry.thickness).ravel()
+        # Taken from chunk 1's history file when present (base layer, tiled up the columns --
+        # thickness is uniform down each column) rather than reloading the 139 GB relaxed model.
+        _h0_path = f'{model_dir}/AIS3_historical_1995_2019{HIST_TAG}_history_1995-2001.npz'
+        if os.path.exists(_h0_path):
+            _h0 = np.load(_h0_path)['initial_thickness'].astype(float)
+            H0 = np.tile(_h0, md.mesh.numberofvertices // _h0.size)
+        else:
+            md_start_ref = pyissm.model.io.load_model(f'{model_dir}/AIS3_ho_relaxed.nc')
+            H0 = np.asarray(md_start_ref.geometry.thickness).ravel()
         thick_ts = md.results.TransientSolution
         final_step = thick_ts[-1] if isinstance(thick_ts, list) else thick_ts
         H1_raw = np.asarray(final_step.Thickness).ravel()
@@ -2750,132 +2821,371 @@ if 'historical_dhdt_tuning' in steps:
 
 
 ## ------------------------------------
-## Stage 6 (SCAFFOLD): Future projections under scenario forcing
+## Stage 6: Future projections (CTRL and SSP-forced), HO mesh
 ## ------------------------------------
-# What comes after historical tuning in this field: forced transient runs under future
-# ocean/atmosphere forcing, to produce Antarctica's projected sea-level contribution.
-# Data survey (confirmed present on disk): /g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/
-# has two forcing GCMs -- CESM2-WACCM and MRI-ESM2-0 -- each with historical/ctrl plus
-# ssp126/ssp245(CESM2-WACCM only)/ssp370/ssp534-over/ssp585 branches, real ocean thermal
-# forcing (ocean/tf/v3/tf_AIS_{gcm}_{scenario}_ocean_v3_{y0}-{y1}.nc, chunked in ~10-year
-# files) and multiple candidate SMB parameterisations per scenario (SDBN1-2000m,
-# SDBN1-8000m, dEBM2-8000m, GEMB-SDBN1-2000m, GEMB-SDBN1-8000m, fracture --
-# .../acabf/v2/acabf_AIS_{gcm}_{scenario}_{param}_v2_{year}.nc, chunked per-year). The
-# "2300" in the path is real: ISMIP7's long-term-commitment protocol extends forcing to
-# year 2300, not just the ISMIP6-era 2100 -- END_YEAR below defaults to 2100 (the more
-# standard/comparable target) but the data supports running further; TODO decide which
-# per what this pipeline is actually feeding (ISMIP7 submission vs internal ACCESS use).
+# HO counterpart of ais_0.1_SSA.py's projection_ssp_ssa (same forcing, same experiment names with
+# an ho_ prefix on files), for the few HO runs that check the SSA ensemble: ctrl, ssp585 ref and
+# optionally ssp585 high melt, to 2100 (docs/projection_experiments.md). One experiment per job
+# chain, chosen with qsub -v via launch_projection_ho.pbs:
+#
+#   AIS3_PROJ_SCENARIO / AIS3_PROJ_GCM / AIS3_PROJ_FORCING / AIS3_PROJ_MELT / AIS3_PROJ_SMOKE
+#                       as in the SSA step; AIS3_PROJ_MELT=high is HO refit candidate g7
+#                       (gamma_0=15000, models/deltaT_refit_state.json)
+#   AIS3_PROJ_END       final year (default 2100)
+#   AIS3_PROJ_HIST_TAG  which HO historical run to start from (default _relaxfix, i.e.
+#                       AIS3_historical_1995_2019_relaxfix.nc, which must reach 2019)
+#   AIS3_PROJ_COLLAPSE  not available on HO yet (SSA step only)
+#
+# Forcing: TF0/SMB0 from the HO historical run, anomalies relative to 1995-2014 built on the base
+# layer with the SSA step's interpolation and copied up every column (the HO base layer is the
+# SSA mesh, checked below), so HO and SSA see identical forcing. GCM climatologies on that mesh are
+# shared with the SSA step (models/AIS3_proj_ssa_*clim_*.npy).
+#
+# Chunks of 10 yr (HO solves ~1.37 h per model year on 96 hugemem cpus, and 96-cpu hugemem jobs
+# are capped at 24 h). Output is annual; each chunk writes a new checkpoint
+# AIS3_proj_ho_{exp}_{year}.nc and a history npz (base-layer thickness/levelset/melt, base and
+# surface speed, scalars), then qsubs the next chunk unless models/AIS3_proj_ho_{exp}.STOP exists.
 if 'projection_ssp' in steps:
 
     print("-------------------------------------------------------------")
-    print(f" FUTURE PROJECTION (SCENARIO-FORCED TRANSIENT)"               )
+    print(" FUTURE PROJECTION, HO (ANOMALY-FORCED, CHUNKED)")
     print("-------------------------------------------------------------")
+    import subprocess
+    import re
+    import json
+    import netCDF4
+    from scipy.spatial import Delaunay
 
     FORCING_ROOT = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS'
-    START_YEAR = 2019   # matches historical_dhdt_tuning's endpoint -- continuity, not a restart
-    END_YEAR = 2100      # TODO: confirm against whichever protocol this feeds (2100 vs 2300)
-    # TODO: pick the SMB parameterisation deliberately rather than defaulting silently --
-    # SDBN1-8000m is the coarsest/cheapest and used here only as a scaffold placeholder.
-    SMB_PARAM = 'SDBN1-8000m'
-    # TODO: for a real ISMIP-style projection this should be the full GCM x SSP matrix
-    # (both GCMs, all available scenarios), each producing an independent run/output --
-    # scaffolded here as one representative pair to establish the mechanics first.
-    RUN_MATRIX = [
-        {'gcm': 'CESM2-WACCM', 'scenario': 'ssp585'},
-        {'gcm': 'CESM2-WACCM', 'scenario': 'ssp126'},
-    ]
+    SMB_PARAM = 'dEBM2-8000m'
+    CLIM_Y0, CLIM_Y1 = 1995, 2014
+    START_YEAR = 2019.0
+    TIME_STEP = 0.1
+    TIME_SENTINEL = 1e9
+    CHUNK_YEARS = 10.0
+    HO_MIN_PER_YEAR = 82.0  # 96-cpu hugemem solve, historical run (6 yr in 8.1-8.3 h)
 
-    def _load_decadal_tf(gcm, scenario, start_year, end_year):
-        """Concatenate ISMIP7's ~10-year-chunked ocean thermal-forcing files covering
-        [start_year, end_year] into one (time, z, y, x) DataArray. TODO: verify chunk
-        boundaries exactly straddle start_year/end_year (files are pre-cut on fixed decade
-        boundaries, e.g. 2025-2034, not aligned to an arbitrary START_YEAR) -- may need to
-        pull one extra chunk on either side and trim, rather than assuming exact coverage."""
-        tf_dir = f'{FORCING_ROOT}/{gcm}/{scenario}/ocean/tf/v3'
-        files = sorted(glob.glob(f'{tf_dir}/tf_AIS_{gcm}_{scenario}_ocean_v3_*.nc'))
-        wanted = []
-        for f in files:
-            y0, y1 = (int(v) for v in Path(f).stem.split('_')[-1].split('-'))
-            if y1 >= start_year and y0 <= end_year:
-                wanted.append(f)
-        if not wanted:
-            raise FileNotFoundError(f"no tf chunks found for {gcm}/{scenario} in {tf_dir}")
-        return xr.open_mfdataset(sorted(wanted), combine = 'by_coords')['tf']
+    scenario = os.environ.get('AIS3_PROJ_SCENARIO', 'ctrl')
+    gcm = os.environ.get('AIS3_PROJ_GCM', '')
+    forcing_mode = os.environ.get('AIS3_PROJ_FORCING', 'both')
+    melt_choice = os.environ.get('AIS3_PROJ_MELT', 'ref')
+    MELT_MEMBERS = {'high': 'g7'}
+    end_year = float(os.environ.get('AIS3_PROJ_END', '2100'))
+    hist_tag = os.environ.get('AIS3_PROJ_HIST_TAG', '_relaxfix')
+    smoke = os.environ.get('AIS3_PROJ_SMOKE', '') == '1'
+    assert forcing_mode in ('both', 'ocean', 'smb'), forcing_mode
+    if scenario == 'ctrl':
+        exp = f'ctrl_{melt_choice}' if melt_choice != 'ref' else 'ctrl'
+        use_ocean = use_smb = False
+    else:
+        assert gcm, 'AIS3_PROJ_GCM is required for an SSP experiment'
+        ftag = {'both': 'ref', 'ocean': 'oceanonly', 'smb': 'smbonly'}[forcing_mode]
+        exp = f"{scenario}_{gcm.split('-')[0].lower()}_{melt_choice}_{ftag}"
+        use_ocean = forcing_mode in ('both', 'ocean')
+        use_smb = forcing_mode in ('both', 'smb')
+    if os.environ.get('AIS3_PROJ_COLLAPSE', '') == '1':
+        # The SSA step's levelset version (sub-solves split at mask changes) is not ported to the
+        # prism mesh yet; the extra-melt version tried first was unstable (worklog 6.12).
+        raise NotImplementedError('AIS3_PROJ_COLLAPSE: SSA track only for now (ais_0.1_SSA.py)')
+    print(f"-- Experiment ho_{exp}: scenario={scenario} gcm={gcm or '-'} forcing={forcing_mode} "
+          f"melt={melt_choice} end={end_year:.0f} start file tag={hist_tag!r} smoke={smoke}")
 
-    def _load_annual_smb(gcm, scenario, smb_param, start_year, end_year):
-        """Concatenate ISMIP7's per-year acabf (SMB flux) files. TODO: confirm units/sign
-        convention (kg m-2 s-1 vs already-annualised) against the file's own attrs at run
-        time -- do not assume it matches the RACMO smbgl convention used in stage 5."""
-        smb_dir = f'{FORCING_ROOT}/{gcm}/{scenario}/{smb_param}/acabf/v2'
-        files = []
-        for yr in range(start_year, end_year + 1):
-            matches = glob.glob(f'{smb_dir}/acabf_AIS_{gcm}_{scenario}_{smb_param}_v2_{yr}.nc')
-            if matches:
-                files.append(matches[0])
-        if not files:
-            raise FileNotFoundError(f"no acabf files found for {gcm}/{scenario}/{smb_param} in {smb_dir}")
-        return xr.open_mfdataset(sorted(files), combine = 'by_coords')['acabf']
+    init_path = f'{model_dir}/AIS3_proj_ho{hist_tag}_init.nc'
+    baseline_path = f'{model_dir}/AIS3_proj_ho{hist_tag}_baseline.npz'
+    stop_path = f'{model_dir}/AIS3_proj_ho{hist_tag}_{exp}.STOP'
 
-    for run in RUN_MATRIX:
-        gcm, scenario = run['gcm'], run['scenario']
-        run_name = f"AIS3_projection_{gcm}_{scenario}"
-        print(f"\n-- Run: {gcm} / {scenario} ({START_YEAR}-{END_YEAR}) --")
+    def _interp_weights(src_x, src_y, tgt_x, tgt_y):
+        """Same precomputed linear interpolation as ais_0.1_SSA.py (Delaunay + barycentric)."""
+        src_xy = np.column_stack([np.asarray(src_x).ravel(), np.asarray(src_y).ravel()])
+        tgt_xy = np.column_stack([np.asarray(tgt_x).ravel(), np.asarray(tgt_y).ravel()])
+        tri = Delaunay(src_xy)
+        simplex = tri.find_simplex(tgt_xy)
+        vertices = np.take(tri.simplices, simplex, axis=0)
+        temp = np.take(tri.transform, simplex, axis=0)
+        bary = np.einsum('njk,nk->nj', temp[:, :2, :], tgt_xy - temp[:, 2])
+        return vertices, np.hstack((bary, 1 - bary.sum(axis=1, keepdims=True))), simplex
 
-        print(f"   Loading historical end-state as initial condition...")
-        md = pyissm.model.io.load_model(f'{model_dir}/AIS3_historical_1995_2019.nc')
+    def _interp_apply(values, vtx, wts, simplex):
+        out = np.einsum('nj,nj->n', np.asarray(values).ravel()[vtx], wts)
+        out[simplex == -1] = np.nan
+        return out
 
-        print(f"   Loading {gcm}/{scenario} ocean thermal forcing and SMB (real ISMIP7 files)...")
-        tf_da = _load_decadal_tf(gcm, scenario, START_YEAR, END_YEAR)
-        smb_da = _load_annual_smb(gcm, scenario, SMB_PARAM, START_YEAR, END_YEAR)
-        # TODO: interpolate tf_da/smb_da onto the mesh x/y (and, for tf, depth) exactly as
-        # melt_gamma_tuning does for the static Zhou climatology and historical_dhdt_tuning
-        # does for RACMO SMB, but now preserving the TIME dimension (build one (nv+1, nt)
-        # md.smb.mass_balance-style array and one time-indexed md.basalforcings.tf list per
-        # ISSM's timeseries convention) rather than a single time-collapsed field -- this is
-        # the main new plumbing this stage needs beyond stages 3/5's machinery.
-
-        md.inversion.iscontrol = 0
-        md.verbose.solution = 1
-
-        md.transient = pyissm.model.classes.transient.deactivate_all(md.transient)
-        md.transient.isstressbalance = 1
-        md.transient.ismasstransport = 1
-        md.transient.issmb = 1
-        md.transient.isthermal = 0   # TODO: revisit once stages 1/2 (HO thermal/friction) are fully validated
-        md.transient.isgroundingline = 1
-        md.groundingline.migration = 'SubelementMigration'
-        md.transient.requested_outputs = [
-            'default', 'Vel', 'Thickness', 'Surface', 'Base', 'MaskOceanLevelset',
-            'IceVolume', 'IceVolumeAboveFloatation',
-        ]
-
+    # -- Projection initial state, built once from the HO historical run's 2019 end state -------
+    if not os.path.exists(init_path):
+        hist_path = f'{model_dir}/AIS3_historical_1995_2019{hist_tag}.nc'
+        print(f"-- Building HO projection initial state from {hist_path}...")
+        md = pyissm.model.io.load_model(hist_path)
+        assert abs(float(md.timestepping.final_time) - START_YEAR) < 1e-6, \
+            f'{hist_path} only reaches t={md.timestepping.final_time}; finish the historical run first'
+        md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
+        adopt_final_state(md)
+        sync_mesh_z(md)
+        md.results.TransientSolution = []
+        nv = md.mesh.numberofvertices
+        nvb = int(md.mesh.numberofvertices2d)
+        mb = np.asarray(md.smb.mass_balance, dtype=float)
+        mb_years = mb[nv, :]
+        sel = (mb_years >= CLIM_Y0) & (mb_years <= CLIM_Y1)
+        assert sel.sum() == CLIM_Y1 - CLIM_Y0 + 1, f'historical SMB years {mb_years}'
+        smb0_base = np.nan_to_num(mb[:nvb, sel].mean(axis=1), nan=0.0)
+        tf0_base = np.stack([np.asarray(t, dtype=float)[:nvb, 0] for t in md.basalforcings.tf])
+        tf_depths0 = np.asarray(md.basalforcings.tf_depths, dtype=float).ravel()
+        print(f"   SMB0 = RACMO {CLIM_Y0}-{CLIM_Y1} mean: base-layer mean {smb0_base.mean():.4f} m ice eq/yr; "
+              f"TF0 {tf0_base.shape}; gamma_0={float(md.basalforcings.gamma_0)}")
+        nl = nv // nvb
+        md.basalforcings.tf = [np.append(np.tile(tf0_base[k], nl), TIME_SENTINEL).reshape(-1, 1)
+                               for k in range(tf0_base.shape[0])]
+        md.smb = pyissm.model.classes.smb.default(md.smb)
+        md.smb.mass_balance = np.tile(smb0_base, nl)
         md.timestepping.start_time = START_YEAR
-        md.timestepping.final_time = END_YEAR
-        md.timestepping.time_step = 0.1   # years -- matches stage 5's historical run
+        md.timestepping.final_time = START_YEAR
+        np.savez(baseline_path + '.tmp.npz', tf0_base=tf0_base, tf_depths=tf_depths0, smb0_base=smb0_base)
+        os.replace(baseline_path + '.tmp.npz', baseline_path)
+        pyissm.model.io.save_model(md, init_path + '.tmp')
+        os.replace(init_path + '.tmp', init_path)
+        print(f"   Saved {init_path} and {baseline_path}")
+        del md
 
-        print(f"   Assigning cluster and updating settings...")
-        md.miscellaneous.name = run_name
-        md.cluster = cluster
-        md.settings.waitonlock = 0
+    base = np.load(baseline_path)
+    tf0_base, tf_depths0, smb0_base = base['tf0_base'], base['tf_depths'], base['smb0_base']
 
-        if save:
-            print(f"   Loading projection transient solution...")
-            md = pyissm.model.execute.solve(md, 'Transient', load_only = True, runtime_name = False)
+    def set_static_forcing(md):
+        nl = md.mesh.numberofvertices // tf0_base.shape[1]
+        md.basalforcings.tf = [np.append(np.tile(tf0_base[k], nl), TIME_SENTINEL).reshape(-1, 1)
+                               for k in range(tf0_base.shape[0])]
+        md.basalforcings.tf_depths = tf_depths0.copy()
+        md.smb = pyissm.model.classes.smb.default(md.smb)
+        md.smb.mass_balance = np.tile(smb0_base, nl)
 
-            print(f"   Computing sea-level-equivalent (SLE) contribution time series...")
-            # Standard VAF -> SLE conversion: SLE_mm = (VAF_0 - VAF_t) * rho_ice/rho_seawater
-            # / A_ocean * 1000. A_ocean = 3.625e14 m^2 is the standard ISMIP6/7 constant
-            # ocean surface area -- TODO confirm this pipeline should use that exact
-            # constant rather than a project-specific one if this feeds an ISMIP7 submission.
-            vaf_ts = np.array([np.sum(np.asarray(t.IceVolumeAboveFloatation))
-                                for t in md.results.TransientSolution])
-            rho_sw = 1023.0  # kg/m^3, standard seawater density (not currently in md.materials)
-            A_OCEAN = 3.625e14  # m^2, standard ISMIP6/7 constant
-            sle_mm = (vaf_ts[0] - vaf_ts) * md.materials.rho_ice / rho_sw / A_OCEAN * 1000.0
-            print(f"   {gcm}/{scenario}: cumulative SLE contribution by {END_YEAR} = {sle_mm[-1]:.2f} mm")
+    # -- Resume from this experiment's latest checkpoint, else the initial state ----------------
+    ckpts = []
+    for f in glob.glob(f'{model_dir}/AIS3_proj_ho{hist_tag}_{exp}_*.nc'):
+        tail = Path(f).stem[len(f'AIS3_proj_ho{hist_tag}_{exp}_'):]
+        if tail.isdigit():
+            ckpts.append((float(tail), f))
+    ckpts.sort()
+    current_time, resume_file = (ckpts[-1] if (ckpts and not smoke) else (START_YEAR, init_path))
+    if current_time >= end_year:
+        raise SystemExit(f"ho_{exp} already complete (checkpoint at {current_time:.0f})")
+    edges = [START_YEAR] + [float(e) for e in np.arange(2030.0, end_year, CHUNK_YEARS)] + [end_year]
+    t1 = next(e for e in edges if e > current_time)  # 2019->2030->2040->...->end
+    if smoke:
+        t1 = current_time + 0.2
+    print(f"-- Chunk {current_time:.1f} -> {t1:.1f} from {resume_file}")
+    md = pyissm.model.io.load_model(resume_file)
+    md.results.TransientSolution = []
+    nv = md.mesh.numberofvertices
+    nvb = int(md.mesh.numberofvertices2d)
+    nl = nv // nvb
+    assert abs(float(md.timestepping.final_time) - current_time) < 1e-6, \
+        f'checkpoint final_time {md.timestepping.final_time} != {current_time}'
+    xb = np.asarray(md.mesh.x, dtype=float).ravel()[:nvb]
+    yb = np.asarray(md.mesh.y, dtype=float).ravel()[:nvb]
 
-            print(f"   Saving to {model_dir}/{run_name}.nc")
-            pyissm.model.io.save_model(md, f'{model_dir}/{run_name}.nc')
+    if melt_choice != 'ref':
+        with open(f'{model_dir}/deltaT_refit_state.json') as f:
+            cand = json.load(f)['candidates'][MELT_MEMBERS.get(melt_choice, melt_choice).lstrip('g')]
+        assert cand['converged'], f'HO refit candidate {melt_choice} did not converge'
+        md.basalforcings.gamma_0 = float(cand['gamma_0'])
+        md.basalforcings.delta_t = np.asarray(cand['history'][-1]['delta_t'], dtype=float)
+    print(f"   melt: gamma_0={float(md.basalforcings.gamma_0)}, deltaT range "
+          f"[{np.min(md.basalforcings.delta_t):.3f}, {np.max(md.basalforcings.delta_t):.3f}]")
+
+    # -- Forcing (base layer, then copied up each column) -------------------------------------
+    years = np.arange(int(np.floor(current_time)), int(np.ceil(t1)) + 1)
+    col_times = years + 0.5
+
+    def _tf_years(f):
+        y = Path(f).stem.split('_')[-1].split('-')
+        return int(y[0]), int(y[-1])
+
+    def _load_tf(gcm_, scen, y0, y1):
+        files = [f for f in sorted(glob.glob(f'{FORCING_ROOT}/{gcm_}/{scen}/ocean/tf/v3/tf_AIS_*.nc'))
+                 if _tf_years(f)[1] >= y0 and _tf_years(f)[0] <= y1]
+        if not files:
+            raise FileNotFoundError(f'no TF files for {gcm_}/{scen} {y0}-{y1}')
+        # cftime throughout: proleptic-Gregorian files (MRI-ESM2-0) otherwise decode to pandas timestamps
+        # before ~2262 and cftime after, which open_mfdataset cannot combine.
+        da = xr.open_mfdataset(files, combine='by_coords',
+                               decode_times=xr.coders.CFDatetimeCoder(use_cftime=True))['tf']
+        return da.sel(time=(da['time.year'] >= y0) & (da['time.year'] <= y1))
+
+    def _smb_year_myr(gcm_, scen, yr, rho_ice, yts):
+        m = glob.glob(f'{FORCING_ROOT}/{gcm_}/{scen}/{SMB_PARAM}/acabf/v*/acabf_AIS_{gcm_}_{scen}_{SMB_PARAM}_v*_{yr}.nc')
+        if not m:
+            return None
+        return (xr.open_dataset(m[0])['acabf'].mean('time') * yts / rho_ice).to_numpy()
+
+    if use_ocean or use_smb:
+        # The HO base layer must be the SSA mesh for the shared climatology caches (worklog 4w).
+        ssa_nc = netCDF4.Dataset(f'{model_dir}/AIS3_proj_ssa_init.nc')
+        assert np.allclose(np.asarray(ssa_nc['mesh']['x'][:]).ravel(), xb) and \
+            np.allclose(np.asarray(ssa_nc['mesh']['y'][:]).ravel(), yb), 'HO base layer != SSA mesh'
+        ssa_nc.close()
+        ref_grid = xr.open_dataset(sorted(glob.glob(f'{FORCING_ROOT}/{gcm}/historical/ocean/tf/v3/*.nc'))[0])
+        gxx, gyy = np.meshgrid(ref_grid['x'].values, ref_grid['y'].values)
+        vtx, wts, simplex = _interp_weights(gxx, gyy, xb, yb)
+        to_mesh = lambda a: _interp_apply(a, vtx, wts, simplex)
+
+    if use_ocean:
+        clim_path = f'{model_dir}/AIS3_proj_ssa_tfclim_{gcm}_{CLIM_Y0}-{CLIM_Y1}.npy'
+        if not os.path.exists(clim_path):
+            clim = _load_tf(gcm, 'historical', CLIM_Y0, CLIM_Y1)
+            assert clim.sizes['time'] == CLIM_Y1 - CLIM_Y0 + 1, clim.sizes
+            clim = clim.mean('time', skipna=True).to_numpy()
+            np.save(clim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', np.stack([to_mesh(clim[k]) for k in range(clim.shape[0])]))
+            os.replace(clim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', clim_path)
+        tf_clim = np.load(clim_path)
+        assert tf_clim.shape == tf0_base.shape, (tf_clim.shape, tf0_base.shape)
+        tf_da = _load_tf(gcm, scenario, int(years[0]), int(years[-1]))
+        tf_years = tf_da['time.year'].values
+        assert np.allclose(tf_da['z'].values, tf_depths0), 'TF depth levels differ from TF0'
+        tf_base = np.empty((tf0_base.shape[0], nvb, years.size))
+        for j, yr in enumerate(years):
+            src = yr if yr in tf_years else tf_years[tf_years <= yr].max()
+            slab = tf_da.isel(time=int(np.where(tf_years == src)[0][0])).to_numpy()
+            for k in range(tf0_base.shape[0]):
+                tf_base[k, :, j] = tf0_base[k] + np.nan_to_num(to_mesh(slab[k]) - tf_clim[k], nan=0.0)
+        fl = np.asarray(md.mask.ocean_levelset).ravel()[:nvb] < 0
+        d = tf_base[:, fl, -1] - tf0_base[:, fl]
+        print(f"      TF anomaly {years[-1]} over floating base vertices: mean {d.mean():+.3f} C, "
+              f"p95 {np.percentile(d, 95):+.3f}")
+        md.basalforcings.tf = []
+        for k in range(tf0_base.shape[0]):
+            col = np.empty((nv + 1, years.size))
+            col[:nv] = np.tile(tf_base[k], (nl, 1))
+            col[nv] = col_times
+            md.basalforcings.tf.append(col)
+        md.basalforcings.tf_depths = tf_depths0.copy()
+        del tf_base
+    else:
+        md.basalforcings.tf = [np.append(np.tile(tf0_base[k], nl), TIME_SENTINEL).reshape(-1, 1)
+                               for k in range(tf0_base.shape[0])]
+        md.basalforcings.tf_depths = tf_depths0.copy()
+
+    md.smb = pyissm.model.classes.smb.default(md.smb)
+    if use_smb:
+        rho_ice, yts = float(md.materials.rho_ice), float(md.constants.yts)
+        sclim_path = f'{model_dir}/AIS3_proj_ssa_smbclim_{gcm}_{SMB_PARAM}_{CLIM_Y0}-{CLIM_Y1}.npy'
+        if not os.path.exists(sclim_path):
+            acc = [_smb_year_myr(gcm, 'historical', y, rho_ice, yts) for y in range(CLIM_Y0, CLIM_Y1 + 1)]
+            assert all(a is not None for a in acc), 'missing historical acabf years'
+            np.save(sclim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', to_mesh(np.mean(acc, axis=0)))
+            os.replace(sclim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', sclim_path)
+        smb_clim = np.load(sclim_path)
+        mb = np.empty((nv + 1, years.size))
+        last_a = None
+        for j, yr in enumerate(years):
+            a = _smb_year_myr(gcm, scenario, yr, rho_ice, yts)
+            if a is None:
+                assert last_a is not None, f'no acabf for {gcm}/{scenario} {yr}'
+                a = last_a
+            last_a = a
+            mb[:nv, j] = np.tile(smb0_base + np.nan_to_num(to_mesh(a) - smb_clim, nan=0.0), nl)
+            mb[nv, j] = col_times[j]
+        print(f"      SMB anomaly {years[-1]}: base-layer mean {np.mean(mb[:nvb, -1] - smb0_base):+.4f} m ice eq/yr")
+        md.smb.mass_balance = mb
+    else:
+        md.smb.mass_balance = np.tile(smb0_base, nl)
+
+    # -- Solver setup, same physics as historical_dhdt_tuning -----------------------------------
+    md.inversion.iscontrol = 0
+    md.verbose.solution = 1
+    md.transient = pyissm.model.classes.transient.deactivate_all(md.transient)
+    md.transient.isstressbalance = 1
+    md.transient.ismasstransport = 1
+    md.transient.issmb = 1
+    md.transient.isthermal = 0
+    md.transient.isgroundingline = 1
+    md.groundingline.migration = 'SubelementMigration'
+    md.transient.requested_outputs = [
+        'Thickness', 'Surface', 'Base', 'MaskOceanLevelset', 'Vx', 'Vy', 'Vz', 'Vel',
+        'BasalforcingsFloatingiceMeltingRate', 'SmbMassBalance',
+        'IceVolume', 'IceVolumeAboveFloatation', 'GroundedArea', 'FloatingArea',
+        'TotalSmb', 'TotalFloatingBmb', 'TotalGroundedBmb', 'GroundinglineMassFlux',
+    ]  # no IcefrontMassFlux: ISSM has it for 2D elements only ("not implemented" on prisms, HO smoke test)
+    md.timestepping.start_time = current_time
+    md.timestepping.final_time = t1
+    md.timestepping.time_step = TIME_STEP
+    md.settings.output_frequency = 1 if smoke else int(round(1.0 / TIME_STEP))
+    md.settings.solver_residue_threshold = 1e-3
+    sync_mesh_z(md)
+
+    run_name = f'AIS3_proj_ho{hist_tag}_{exp}_{current_time:.0f}-{t1:.0f}' + ('_smoke' if smoke else '')
+    md.miscellaneous.name = run_name
+    md.cluster = pyissm.model.classes.cluster.gadi()
+    for attr in ('codepath', 'executionpath', 'storage', 'moduleuse', 'moduleload', 'login', 'project'):
+        setattr(md.cluster, attr, getattr(cluster, attr))
+    md.cluster.queue = 'hugemem'
+    md.cluster.np = 96
+    md.cluster.memory = 1450 * 2
+    # 1.7x the historical run's rate, capped under the 24 h limit for 96-cpu hugemem jobs.
+    md.cluster.time = 60 if smoke else int(min(23.5 * 60, np.ceil(1.7 * (t1 - current_time) * HO_MIN_PER_YEAR)))
+    wall_min = 45 * 60
+    try:
+        qs = subprocess.run(['qstat', '-f', os.environ['PBS_JOBID']], capture_output=True, text=True).stdout
+        hh, mm, _ = re.search(r'Resource_List.walltime = (\d+):(\d+):(\d+)', qs).groups()
+        wall_min = int(hh) * 60 + int(mm)
+    except (KeyError, AttributeError):
+        pass
+    md.settings.waitonlock = max(30, wall_min - 120)
+    print(f"   inner solve time {md.cluster.time} min; wait budget {md.settings.waitonlock} min")
+
+    print(f"-- Submitting and waiting on {run_name}...")
+    md = pyissm.model.execute.solve(md, 'Transient', load_only=False, runtime_name=False)
+
+    # -- History (annual): base layer, plus surface speed -----------------------------------
+    ts = md.results.TransientSolution
+    steps_list = list(ts.steps) if hasattr(ts, 'steps') else (ts if isinstance(ts, list) else [ts])
+    times = np.array([float(s.time) for s in steps_list])
+    # The solve must have reached t1. A solve killed at its walltime leaves a partial outbin that
+    # pyissm loads without complaint; adopting its last step and saving it as t1 silently skipped
+    # 19, 13 and 4 model years in three runs (worklog 6.10). Stop here instead: no history, no
+    # checkpoint, no next chunk.
+    if times.size == 0 or abs(times[-1] - t1) > 1e-6:
+        raise SystemExit(f"{run_name}: solve ended at t={times[-1] if times.size else 'none'}, not {t1} "
+                         f"(inner job killed or failed?) -- no checkpoint written, chain stopped")
+
+    def _stack(field, layer='base'):
+        sl = slice(0, nvb) if layer == 'base' else slice(nv - nvb, nv)
+        return np.stack([np.asarray(getattr(s, field), dtype=np.float32).ravel()[sl] for s in steps_list])
+
+    scalar_names = ['IceVolume', 'IceVolumeAboveFloatation', 'GroundedArea', 'FloatingArea', 'TotalSmb',
+                    'TotalFloatingBmb', 'TotalGroundedBmb', 'GroundinglineMassFlux']
+    scalars = {n: np.array([float(np.asarray(getattr(s, n, np.nan)).ravel()[0]) for s in steps_list])
+               for n in scalar_names}
+    hist_out = f'{model_dir}/{run_name}_history.npz'
+    np.savez(hist_out, times=times, thickness=_stack('Thickness'), ocean_levelset=_stack('MaskOceanLevelset'),
+             vel=_stack('Vel', 'surface'), vel_base=_stack('Vel'), melt=_stack('BasalforcingsFloatingiceMeltingRate'),
+             smb=_stack('SmbMassBalance', 'surface'), **{f'scalar_{n}': v for n, v in scalars.items()})
+    vaf = scalars['IceVolumeAboveFloatation']
+    print(f"   saved {hist_out} ({times.size} outputs, t={times[0]:.2f}..{times[-1]:.2f})")
+    print(f"   VAF change over chunk {vaf[-1] - vaf[0]:+.4e} m^3 "
+          f"(= {-(vaf[-1] - vaf[0]) * float(md.materials.rho_ice) / 1028.0 / 3.625e14 * 1000:+.2f} mm SLE)")
+    for n in ('GroundedArea', 'TotalSmb', 'TotalFloatingBmb', 'GroundinglineMassFlux'):
+        print(f"   {n}: first {scalars[n][0]:.4e}, last {scalars[n][-1]:.4e}")
+
+    if smoke:
+        print("-- Smoke test complete (no checkpoint, no chaining).")
+    else:
+        adopt_final_state(md)
+        sync_mesh_z(md)
+        md.results.TransientSolution = []
+        set_static_forcing(md)
+        ckpt = f'{model_dir}/AIS3_proj_ho{hist_tag}_{exp}_{t1:.0f}.nc'
+        pyissm.model.io.save_model(md, ckpt + '.tmp')
+        os.replace(ckpt + '.tmp', ckpt)
+        print(f"   saved checkpoint {ckpt}")
+        if t1 < end_year and not os.path.exists(stop_path):
+            env = ','.join(f'{k}={os.environ[k]}' for k in
+                           ('AIS3_STEPS', 'AIS3_PROJ_SCENARIO', 'AIS3_PROJ_GCM', 'AIS3_PROJ_FORCING',
+                            'AIS3_PROJ_MELT', 'AIS3_PROJ_END', 'AIS3_PROJ_HIST_TAG') if os.environ.get(k))
+            log = f'/g/data/au88/jh7060/ACCESS-AIS3/config/logs/proj_ho_{exp}_{t1:.0f}-next'
+            out = subprocess.run(['qsub', '-v', env, '-N', f'ho_{exp}'[:15], '-o', log + '.out', '-e', log + '.err',
+                                  '/g/data/au88/jh7060/ACCESS-AIS3/config/launch_projection_ho.pbs'],
+                                 capture_output=True, text=True)
+            print(f"   next chunk submitted: {out.stdout.strip()} {out.stderr.strip()}")
+        elif t1 < end_year:
+            print(f"   {stop_path} exists -- not submitting the next chunk")
         else:
-            print(f"   Submitting projection run...")
-            md = pyissm.model.execute.solve(md, 'Transient', load_only = False, runtime_name = False)
+            print(f"-- ho_{exp} complete through {end_year:.0f}")
