@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N larmip_p3_fin
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=02:00:00
+#PBS -l ncpus=4
+#PBS -l mem=64GB
+#PBS -l storage=gdata/au88
+#PBS -l wd
+#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/logs/larmip_p3_final.out
+#PBS -e /g/data/au88/jh7060/ACCESS-AIS3/config/logs/larmip_p3_final.err
+# After the Ross ramp coupledN_p3 run reaches 2219 (worklog 6.16): archive the partial CSV and the
+# analysis figures (renamed, not deleted), re-export the coupledN_p3 set, rerun the analysis.
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+R=/g/data/au88/jh7060/ACCESS-AIS3; cd $R/config
+if [ ! -f $R/models/AIS3_proj_ssa_larmip_r3_ramp_coupledN_p3_2219.nc ]; then
+  echo "NO 2219 CHECKPOINT - not exporting"; ls -lt $R/models/AIS3_proj_ssa_larmip_r3_ramp_coupledN_p3_22*.nc; exit 1
+fi
+tag=partial_r3ramp_y81_20261021
+mv -n $R/docs/larmip/AIS3_ssa_larmip_sle_coupledN_p3.csv $R/docs/larmip/AIS3_ssa_larmip_sle_coupledN_p3.$tag.csv
+for f in larmip_vs_larmip2 larmip_lrt_test; do mv -n $R/docs/figures/$f.png $R/docs/figures/$f.$tag.png; done
+PY=/scratch/au88/jh7060/mamba/envs/pyissm/bin/python
+$PY -u export_larmip.py --ramp --variant coupledN_p3 && $PY -u analyse_larmip.py

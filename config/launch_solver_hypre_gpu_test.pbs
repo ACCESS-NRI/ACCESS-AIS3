@@ -1,0 +1,16 @@
+#!/bin/bash
+# qsub -v PHASE=submit[,NP=16][,TAG=_x][,KSP_MAX_IT=2000] launch_solver_hypre_gpu_test.pbs   (then PHASE=analyze once the solve finishes)
+#PBS -N solver_hypre
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=01:00:00
+#PBS -l ncpus=4
+#PBS -l mem=32GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/launch_solver_hypre_gpu_test.pbs.out
+#PBS -e /g/data/au88/jh7060/ACCESS-AIS3/config/launch_solver_hypre_gpu_test.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+cd /g/data/au88/jh7060/ACCESS-AIS3/config
+echo "PHASE=$PHASE NP=$NP"
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u solver_hypre_gpu_test.py

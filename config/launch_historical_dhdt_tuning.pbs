@@ -1,10 +1,12 @@
 #!/bin/bash
+# Driver only (loads the model, builds forcing, waits on the 96-cpu solve): 24 cpu / 720 GB since
+# annual output (2026-09-30); was 48 cpu / 1450 GB when every 0.1-yr 3D step was loaded (peak 500-700 GB).
 #PBS -N historical_dhdt
 #PBS -P au88
 #PBS -q hugemem
 #PBS -l walltime=45:00:00
-#PBS -l ncpus=48
-#PBS -l mem=1450GB
+#PBS -l ncpus=24
+#PBS -l mem=720GB
 #PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
 #PBS -l wd
 #PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/launch_historical_dhdt_tuning.pbs.out

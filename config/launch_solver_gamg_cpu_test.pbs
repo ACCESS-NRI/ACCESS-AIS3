@@ -1,0 +1,16 @@
+#!/bin/bash
+# qsub -v PHASE=submit launch_solver_gamg_cpu_test.pbs   (then PHASE=analyze once the solves finish)
+#PBS -N solver_gamg
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=01:00:00
+#PBS -l ncpus=4
+#PBS -l mem=32GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/launch_solver_gamg_cpu_test.pbs.out
+#PBS -e /g/data/au88/jh7060/ACCESS-AIS3/config/launch_solver_gamg_cpu_test.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+cd /g/data/au88/jh7060/ACCESS-AIS3/config
+echo "PHASE=$PHASE CASES=$CASES"
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u solver_gamg_cpu_test.py

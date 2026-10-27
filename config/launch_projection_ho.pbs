@@ -1,0 +1,19 @@
+#!/bin/bash
+# One 10-yr chunk of an HO projection experiment; the chunk qsubs its successor itself.
+#   qsub -v AIS3_STEPS=projection_ssp,AIS3_PROJ_SCENARIO=ctrl -o logs/proj_ho_ctrl_2019.out -e logs/proj_ho_ctrl_2019.err launch_projection_ho.pbs
+#   qsub -v AIS3_STEPS=projection_ssp,AIS3_PROJ_SCENARIO=ssp585,AIS3_PROJ_GCM=CESM2-WACCM[,AIS3_PROJ_MELT=high] ... launch_projection_ho.pbs
+# Needs models/AIS3_historical_1995_2019_relaxfix.nc complete to 2019 (AIS3_PROJ_HIST_TAG to change).
+# Stop a chain after its current chunk: touch models/AIS3_proj_ho<hist_tag>_<exp>.STOP (e.g. AIS3_proj_ho_relaxfix_ctrl.STOP)
+# Driver only (loads the model, builds forcing, waits on the 96-cpu hugemem solve, saves): annual
+# output keeps it well under 720 GB, so it takes a partial hugemem node instead of all 48 cpus.
+#PBS -N proj_ho
+#PBS -P au88
+#PBS -q hugemem
+#PBS -l walltime=45:00:00
+#PBS -l ncpus=24
+#PBS -l mem=720GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+cd /g/data/au88/jh7060/ACCESS-AIS3/config
+/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u ais_0.1.py

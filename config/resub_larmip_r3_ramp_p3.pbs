@@ -1,0 +1,20 @@
+#!/bin/bash
+#PBS -N resub_r3p3
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=00:10:00
+#PBS -l ncpus=1
+#PBS -l mem=1GB
+#PBS -l storage=gdata/au88
+#PBS -l wd
+# Runs after driver 181546272 exits (worklog 6.16). If the 2125 checkpoint exists, releases the STOP
+# file (renamed, not deleted) and resubmits the Ross ramp coupledN_p3 run in 8-yr chunks.
+M=/g/data/au88/jh7060/ACCESS-AIS3/models; C=/g/data/au88/jh7060/ACCESS-AIS3/config
+exp=larmip_r3_ramp_coupledN_p3
+if [ ! -f $M/AIS3_proj_ssa_${exp}_2125.nc ]; then
+  echo "NO 2125 CHECKPOINT - not resubmitting"; ls -lt $M/AIS3_proj_ssa_${exp}_*; exit 1
+fi
+mv -n $M/AIS3_proj_ssa_${exp}.STOP $M/AIS3_proj_ssa_${exp}.STOP.released_$(date +%Y%m%d)
+log=$C/logs/proj_ssa_${exp}_2125-next
+qsub -v AIS3_STEPS=projection_ssp_ssa,AIS3_PROJ_LARMIP_REGION=3,AIS3_PROJ_LARMIP_MODE=ramp,AIS3_PROJ_FRICTION=coupledN_p3,AIS3_PROJ_CHUNK_YEARS=8,AIS3_PROJ_TIME_FACTOR=22 \
+  -N lar_r3_rp3 -o $log.out -e $log.err $C/launch_projection_ssa.pbs
