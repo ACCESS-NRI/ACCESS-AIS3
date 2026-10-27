@@ -31,7 +31,7 @@ not the relaxed, geometry — by design, see the §4z correction):
 | 2. Relaxation (20 yr, zero SMB/melt) | `ssa_relaxation_budd` | **done**; not propagated downstream, by design | `AIS3_SSA_relaxed.nc` |
 | 3. Ocean melt calibration | `melt_gamma_tuning_ssa` (now builds the validated calibration, §5d) | **calibrated**: gamma_0=300, refit deltaT (§4k, §4n) | `AIS3_melt_final_ssa.nc` |
 | 4. Historical run (1995–2019) | `historical_dhdt_tuning_ssa` | **done**: area-mean close to CPOM after a ~6-yr start-up transient; no interannual skill; misses the West Antarctic acceleration (§4q–§4t, §5b) | `AIS3_historical_1995_2019_SSA.nc` |
-| 5. Future projections | `projection_ssp_ssa` | scaffold; time-varying TF/SMB interpolation implemented and smoke-tested, not run. Uses absolute `acabf` from placeholder `SDBN1-8000m`; SMB anomaly method and elevation feedback still TODO | `AIS3_projection_ssa_{gcm}_{scenario}.nc` |
+| 5. Future projections | `projection_ssp_ssa` | **implemented 2026-09-29** (§6): anomaly forcing, chunked to 2300, CTRL/SSP/attribution/melt variants. Smoke test then CTRL first; SSPs wait for the CTRL drift check. J3 shows gamma_0=300 gives ~4% of ocean models' warming response (§6.1). No SMB elevation feedback | `AIS3_proj_ssa_<exp>_<year>.nc`, `..._history.npz` |
 
 Scaffolded stages have correct model loading / solver setup / save pattern and real data
 paths, but open science decisions are marked `# TODO:` in the code rather than silently
@@ -1681,3 +1681,1177 @@ compared): `ho_stressbalance_tests.py` now uses the default basalforcings class 
 Failed run dirs kept as execution/AIS3_ho_sbtest_*_segv, submit logs as
 launch_ho_stressbalance_tests_submit1.pbs.out/.err, state as ho_stressbalance_tests_state_segv1.json.
 Submit phase resubmitted: job 180107158.
+
+## 6. Projections (SSA track): setup and melt-sensitivity check
+
+Design and experiment matrix: [`projection_experiments.md`](projection_experiments.md). Defaults
+(chosen, open to change): SSA only; start 2019.0 from the historical end state; end 2300 (2100 for
+ssp370, the only length ISMIP7 provides); anomaly forcing on the calibrated baseline, TF = Zhou TF0
++ [TF_gcm(t) - TF_gcm(1995-2014)], SMB = RACMO 1995-2014 mean + [SMB_gcm(t) - SMB_gcm(1995-2014)];
+GCM SMB product dEBM2-8000m (the only one for all 7 GCMs). ISMIP7 forcing on disk: CESM2-WACCM and
+MRI-ESM2-0 have ctrl/ssp126/ssp534-over/ssp585 to 2300 (+ssp370 to 2100); five more GCMs have
+ssp370 to 2100 only.
+
+### 6.1 J3 for the SSA refit candidates (`ssa_melt_j3_refit.py`, job 180110126)
+
+J3 had never been computed with the per-basin refit deltaT (4c/4k picked gamma_0=300 on J1+J2).
+Computed here against ISMIP7's term-3 targets (`melt_{cold,warm}_target_term3_v2.nc`: basin-mean
+melt, kg/m2/a, 7 ocean models: Mathiot NEMO, Timmermann FESOM, Naughten FESOM ACCESS/MMM,
+Jourdain-Naughten, Naughten MITgcm, Haid FESOM), using each model's own cold/warm TF.
+
+Method: ISSM's ismip6 local melt reimplemented in Python from the ISSM source (Element.cpp
+Ismip6FloatingiceMeltingRate, FloatingiceMeltingRatex.cpp): gamma_0*(1028*cp/(rho_i*Lf))^2 *
+max(TF(draft)+deltaT_basin, 0)^2 on all-floating elements, TF linear in depth and clamped, P1DG
+averaged to vertices. Checked against three existing ISSM refit solves (g1_r5, g4_r3, g8_r5):
+max vertex difference 3e-14 m/yr, basin totals identical to 1e-15 relative -- so no cluster solves
+were needed. The target rows equal each ocean model's own basin-mean melt exactly (8 km grid,
+IMBIE2 basins, Bedmap3 floating mask), which also fixes the naughten_ais_1/2 = FESOM ACCESS/MMM
+mapping.
+
+| gamma_0 | J1 | J2 | J3 (kg/m2/a) | J3 on warm-cold change | param/target warm-cold, median |
+|---|---|---|---|---|---|
+| 100 (unconverged) | 6.38 | 115.4 | 3172 | 4125 | 0.019 |
+| **300** | 0.85 | **12.6** | 3062 | 4034 | **0.038** |
+| 1000 | 1.22 | 45.5 | 2943 | 3812 | 0.081 |
+| 3000 | 0.90 | 102.9 | **2776** | **3498** | 0.155 |
+| 5537.7 | 1.43 | 151.4 | 2780 | 3522 | 0.197 |
+| 11075.5 (prior) | 1.10 | 240.2 | 2871 | 3731 | 0.281 |
+| 15000 | 0.67 | 268.7 | 2975 | 3938 | 0.329 |
+| 25000 | 1.32 | 345.3 | 3309 | 4596 | 0.439 |
+
+- With deltaT refit to present-day melt, the warming response grows ~sqrt(gamma_0), as expected.
+  At gamma_0=300 the parameterisation gives ~4% of the ocean models' cold->warm melt increase;
+  even 25000 gives ~44%. Every candidate under-responds; 300 is the least responsive converged one.
+- Monte Carlo over weights (10,000, terms normalised by their medians), 5th/50th/95th gamma_0:
+  J1+J2+J3 300/300/15000 (300 wins 91%); J2+J3 300/300/3000; J1+J2 300/300/300. J3's spread
+  across candidates is small (2776-3309) relative to J2's (12.6-345), so after median
+  normalisation J2 decides -- the ISMIP7-style objective keeps 300 even though it is the
+  weakest warming response.
+- Consequence for projections: with the reference melt (gamma_0=300) the ocean-forced mass loss
+  will be small by construction. A "high melt" member is needed to bracket it; see §6.2. A
+  "low melt" member below 300 does not exist among converged candidates.
+- **Decision (user, 2026-09-29):** keep gamma_0=300 as the reference melt; add gamma_0=15000
+  (candidate g7, the J1+J2+J3 95th percentile, ~33% of the ocean models' response) as the single
+  high-melt member (`AIS3_PROJ_MELT=high`); no low-melt member.
+
+### 6.2 Projection code (`projection_ssp_ssa`, `launch_projection_ssa.pbs`)
+
+Replaced the SSA scaffold. Per job (`qsub -v`): scenario, GCM, forcing (both/ocean/smb for
+attribution), melt (`ref` or refit candidate `g<i>`), end year, smoke flag. First chunk builds
+`models/AIS3_proj_ssa_init.nc` (historical 2019 end state adopted into geometry, results stripped)
+and `AIS3_proj_ssa_baseline.npz` (TF0, SMB0); GCM 1995-2014 TF/SMB climatologies are cached on the
+mesh per GCM. Chunks 2019->2050->2100->...->2300, each writing a new checkpoint
+`AIS3_proj_ssa_<exp>_<year>.nc` and an annual history npz (thickness, ocean levelset, speed, melt,
+SMB; VAF, grounded/floating area, total SMB/BMB, GL and ice-front flux), then qsubbing the next
+chunk unless `models/AIS3_proj_ssa_<exp>.STOP` exists. Memory note: ISSM reads TF one depth at a
+time (MasstransportAnalysis.cpp), so annual TF for a 50-yr chunk (~20 GB total) is fine on 48 ranks.
+Analysis: `check_projection_ssa.py` (SLE from VAF, per basin, CTRL-relative).
+
+**5c second attempt** (driver 180107158, exit 0): inner solves A 180111475, B 180111501, C 180111530.
+A completed cleanly (exit 0, 10 min, .outbin written) through "computing basal mass balance" and
+"computing vertical velocities" -- confirms the first-round crash was specific to the ismip6 melt
+module in a stress-balance-only solve; the default-basalforcings workaround avoids it. (Worth
+noting for any future stress-balance-only HO diagnostic: don't use ismip6 basalforcings there.)
+
+### 6.3 Smoke test and CTRL launch
+
+Smoke test (ssp585/CESM2-WACCM, 2019.0->2019.2; outer 180111657, inner 180112657). The first run
+built `AIS3_proj_ssa_init.nc` (2019 end state adopted: mean|dH| 26.98 m vs the 1995 geometry,
+1,265,464 grounded vertices), `AIS3_proj_ssa_baseline.npz` (SMB0 mesh-mean 0.5441 m ice eq/yr;
+2019 RACMO 0.5379) and the CESM2-WACCM 1995-2014 TF/SMB climatologies. First-year anomalies:
+TF +0.11 C (2019) and +0.19 C (2020) mean over floating vertices, all depths; SMB +0.014 and
++0.005 m ice eq/yr mesh-mean. The ISSM solve ran cleanly (2 steps, 57 s) with every requested
+output present; first-step scalars: VAF 2.2458e16 m^3, grounded area 1.2102e13 m^2, TotalSmb
+2393, TotalFloatingBmb 816, GroundinglineMassFlux 1618, IcefrontMassFlux 1730 (Gt/yr).
+
+The driver then crashed in post-processing (TypeError): `md.results.TransientSolution` is a
+pyissm `solution` whose `.steps` holds the steps; attribute access on the solution returns all
+steps stacked. Fixed (iterate `ts.steps`) and checked offline against the smoke outbin: history
+npz and scalar series written correctly, last-step extraction for the checkpoint matches. Not
+rerun on the cluster.
+
+Launcher resized to 32 cpu / 128 GB (smoke used 80 GB building the initial state): 190 GB needs a
+whole free `normal` node and sat queued for hours.
+
+CTRL launched: job 180114544 (`AIS3_PROJ_SCENARIO=ctrl`), chunk 2019->2050, self-chaining to 2300.
+SSP runs wait for the CTRL drift check (`check_projection_ssa.py ctrl`).
+
+**Allocation note (2026-09-29):** CTRL (180114544) first sat with "Could not reserve allocation
+from project": au88 has 253.7 KSU left in 2026.q3 but **no 2026.q4 grant yet (0 SU)**, and a 46 h
+walltime crossed the 30 Sep quarter boundary. Walltime cut to 24 h with qalter; the projection
+step now sizes the inner solve to the chunk (2 x 12.6 min per model year: 13 h for 2019-2050, 21 h
+for 50-yr chunks) and sets waitonlock to the driver's own walltime minus 90 min. Chunks that would
+run into Q4 will wait in the queue until the Q4 grant is loaded.
+
+**5c RESULT** (analysis job 180117730; solves A 180111475, B 180111501, C 180111530, all exit 0;
+relaxed HO geometry, zero basal melt; grounded ice with observed speed; observed = SSA model's
+vel_obs). Area-weighted mean speed (m/yr) and median vertex ratio to observed:
+
+| | observed | SSA | A as is | B SSA's B | C chunk-3 friction |
+|---|---|---|---|---|---|
+| surface speed | 22.9 | 22.1 | 24.8 | 23.1 | 24.8 |
+| median ratio to observed | -- | 0.99 | 1.09 | 1.02 | 1.09 |
+
+Median B/A 0.963; median C/A 1.000.
+- **Rheology is the main driver.** With SSA's rheology_B, HO's speed drops to about observed
+  (median 1.09 -> 1.02). The East Antarctic basins where HO over-thinned are essentially fixed:
+  b14 1.13 -> 1.00, b2 1.16 -> 1.03, b3 1.14 -> 1.04, b1 1.09 -> 1.01, b0 1.08 -> 1.03, b4 1.10 -> 1.04.
+- **Part remains in the fast West Antarctic basins:** b8 1.12 -> 1.07, b9 1.06 -> 1.03, b10 1.08
+  -> 1.05, b11 1.07 -> 1.04; also b15 1.17 -> 1.09, b5 1.14 -> 1.07. There the incomplete friction
+  inversion (or HO physics) contributes too.
+- **The one-chunk friction lag is irrelevant to speed** (C identical to A). Fixing the downstream
+  copy of FrictionC is bookkeeping only.
+- Caveat: HO friction was inverted with HO's soft B, so "SSA's B + HO's friction" is not a
+  self-consistent pair; the result shows where the excess comes from, not a ready configuration.
+  SSA's B is depth-uniform, which throws away the vertical temperature structure HO exists for.
+- Map (models/ho_stressbalance_tests.png): A shows orange (too fast) broadly across the grounded
+  ice, strongest along the East Antarctic coast and West Antarctica; B is closer to white
+  (= observed) along the East Antarctic coast but shows purple (slower than observed) patches in
+  the East Antarctic and Siple-side interior -- SSA's B overshoots there, i.e. is too stiff for HO
+  where friction was tuned to HO's softer ice -- and still orange in West Antarctica, the
+  Peninsula and fast outlets; C is indistinguishable from A.
+
+**5c case D -- rescaled HO rheology (submitted).** User approved testing a usable HO fix: scale
+each column of HO's rheology_B so its depth-average (trapezoid in sigma from the synced mesh.z)
+equals SSA's B at that column, keeping HO's vertical profile. Same relaxed geometry, HO friction
+as in use, zero basal melt. `ho_stressbalance_tests.py` now supports `CASES=` (submit a subset)
+and merges the state json; `OUT_TAG=` suffixes the analysis plot. Submitted with
+`qsub -v PHASE=submit,CASES=D launch_ho_stressbalance_tests.pbs` (job 180122920); execution name
+AIS3_ho_sbtest_D_rescaledB. First analysis logs kept as launch_ho_stressbalance_tests_analyze1.pbs.out/.err.
+
+**5c case D solved** (driver 180122920 exit 0; inner 180124339 exit 0, 60 min). Column rescale
+factor SSA B / HO depth-avg B: grounded median 1.064 (p10 0.971, p90 1.341) -- HO's grounded
+column-mean B is softer, strongly so in the p90 tail; **floating median 0.757** -- HO's ice-shelf B
+is ~1.32x STIFFER than SSA's inverted shelf B. This supports the reading of the code that
+`ho_thermal_steadystate` recomputed B = cuffey(T) everywhere, overwriting the inverted shelf
+rheology on the shelves (not yet confirmed by direct comparison with load_shelf_rheology_B()).
+Stiffer shelves mean more buttressing, so that alone would slow HO's grounded outflow, not speed
+it up; case D restores the shelf B to SSA's. Analysis of A-D submitted: `qsub -v
+PHASE=analyze,OUT_TAG=_v2 launch_ho_stressbalance_tests.pbs` (job 180181532). Submit-phase logs
+kept as launch_ho_stressbalance_tests_submit3.pbs.out/.err.
+
+**5c case D RESULT** (analysis job 180181532; plot models/ho_stressbalance_tests_v2.png, first plot
+kept). Median surface-speed ratio to observed (area-weighted mean speed m/yr in brackets):
+A 1.09 (24.8), B 1.02 (23.1), C 1.09 (24.8), **D 1.04 (23.7)**; observed 22.9, SSA 0.99 (22.1).
+Median D/A 0.985 (B/A 0.963).
+- D removes about half of HO's excess. Basins where it nearly matches B: 14 1.13 -> 1.02 (B 1.00),
+  0 1.08 -> 1.04, 1 1.09 -> 1.04, 2 1.16 -> 1.06. Basins where D does little but B helped:
+  3 1.14 -> 1.10 (B 1.04), 4 1.10 -> 1.10 (B 1.04), 5 1.14 -> 1.14 (B 1.07), 15 1.17 -> 1.12 (B 1.09).
+  West Antarctica: 8 1.12 -> 1.10, 9 1.06 -> 1.04, 10 1.08 -> 1.08, 11 1.07 -> 1.06.
+- B and D differ only in the vertical profile of grounded B (B: SSA's value at every depth; D: HO's
+  profile scaled to SSA's column mean; both use SSA's shelf B). Where HO's column-mean B already
+  matched SSA's (basins 3/4/5, column ratio ~0.96-1.00), D changes nothing but B still speeds
+  things up less -- so there the excess comes from HO's SOFT BASAL LAYERS (warm steady-state basal
+  temperature), not the column mean. An arithmetic column mean underweights the basal layers,
+  which dominate deformation.
+- Map: D shows less of B's purple (too slow) interior patching -- the overshoot is largely avoided
+  -- but keeps orange (too fast) along the margins and in West Antarctica, like A in weaker form.
+- The remaining West Antarctic excess (also left by B) points at the friction inversion / sliding.
+
+**5c case D2 -- deformation-weighted rescale (submitted).** User approved. D matched HO's plain
+column-mean B to SSA's; D2 instead matches the flow-effective column B for shear deformation on
+grounded columns: B_eff = (sum w B^-n / sum w)^(-1/n) with w = (1 - sigma)^(n+1) (sigma 0 at the
+bed, 1 at the surface), i.e. layer contribution to shear flux ~ A(z) (s - z)^(n+1). Floating
+columns keep D's plain-mean match (plug flow). HO's vertical profile is kept. Submitted with
+`qsub -v PHASE=submit,CASES=D2 launch_ho_stressbalance_tests.pbs` (job 180187628); execution name
+AIS3_ho_sbtest_D2_defweightedB. Previous analysis logs kept as
+launch_ho_stressbalance_tests_analyze2.pbs.out/.err.
+
+### 6.4 CTRL 2019-2050 and stage-1 SSP launch (2026-09-30)
+
+CTRL chunk 1 (driver 180114544, solve 180120303): exit 0; 31 yr in 5 h 25 min (10.5 min per
+model year, faster than the historical run's 12.6), 76 GB, ~930 SU. Checkpoint
+`AIS3_proj_ssa_ctrl_2050.nc` and history written; chunk 2050->2100 queued itself (180135512).
+
+Drift (`check_projection_ssa.py ctrl`, `models/proj_ssa_summary.png`):
+- VAF gain, i.e. sea-level fall: -0.546 mm/yr (2019-2030), -0.522 (2030-2040), -0.507
+  (2040-2050); -16.2 mm by 2050 from ISSM's own VAF (about +190 Gt/yr above flotation). Smooth,
+  nearly linear, decaying ~7% over 30 yr.
+- Grounded area +11,810 km^2 (<0.1%); GL flux 1618 -> 1642 Gt/yr; area-mean grounded speed
+  22.51 -> 22.90 m/yr; floating BMB 760 -> 754 Gt/yr; TotalSmb 2401 Gt/yr (constant SMB0).
+- Per basin (mm SLE by 2050): only Amundsen loses (b9 +6.93, b8 +1.54, matching the historical
+  over-thinning in 4s); gains elsewhere, largest b12 -5.66, b7 -3.75, b1 -3.46, b14 -2.91.
+- Assessment: no runaway or GL instability; the drift is large (~-40 mm by 2100 if it holds) but
+  smooth, so forced runs are reported as forced minus CTRL. The model sits well above observed
+  present-day mass balance (IMBIE roughly -100 to -150 Gt/yr); not diagnosed further here.
+
+Stage-1 reference runs queued (CESM2-WACCM, dEBM2-8000m, ref melt): ssp126 180191333, ssp370
+180191335 (to 2100), ssp585 180191337. All four chains (with CTRL's next chunk) wait on the
+2026.q4 grant (0 SU as of 30 Sep 13:00), since each 46 h chunk crosses the quarter boundary.
+
+### 6.5 HO projections: scope and code (2026-09-30)
+
+Scope agreed: 2-3 HO runs to 2100 (ctrl, ssp585 ref, optional ssp585 high melt) as a check on the
+SSA ensemble, not an HO ensemble. Cost from the HO historical run's logs: solve 6 yr in 8.1-8.3 h
+on 96 hugemem cpus, 2343-2409 SU (~395 SU per model year); driver 48-cpu hugemem 1913-2324 SU per
+6-yr chunk (500-700 GB peak, from loading every 0.1-yr 3D step). About half of HO's cost was the
+driver, so:
+- `historical_dhdt_tuning`: output every 10th step (annual); the relaxed model's own 50-step
+  history is dropped after loading; history times taken from the results; the final dH/dt
+  diagnostic takes H(1995) from chunk 1's history file instead of reloading the 139 GB relaxed
+  model. `launch_historical_dhdt_tuning.pbs` driver 48 cpu/1450 GB -> 24 cpu/720 GB (hugemem
+  accepts 12/16/24-cpu requests with 45 h walltime, probed by qsub).
+- `projection_ssp` (HO) replaces the scaffold: see projection_experiments.md, "HO runs".
+  Estimate ~38k SU per run to 2100 (was ~61k with the old driver).
+- `check_projection_ssa.py` reads HO tracks too (`ho_relaxfix/<exp>`, measured from the HO
+  initial state, compared with HO CTRL).
+
+HO smoke test (job 180193125): ssp585/CESM2-WACCM, 0.2 yr, started from the old unrelaxed
+historical run (`AIS3_PROJ_HIST_TAG=''`, files `AIS3_proj_ho_*`, test only) because the
+`_relaxfix` historical run does not exist yet. Full 48-cpu/1450 GB driver for this test only: that
+old checkpoint still holds every 0.1-yr step.
+
+**5c case D2 submitted** (driver 180187628 exit 0; inner solve 180191459, queued). On grounded
+columns HO's deformation-weighted B is only 0.762 of its plain column mean (median) -- the soft
+basal layers confirmed quantitatively. D2's grounded rescale factor (SSA B / HO B_eff): median
+1.431, p10 1.064, p90 2.261, i.e. D2 stiffens HO's grounded ice by ~43% at the median column and
+more than 2x in the p90 tail (D's plain-mean factor was median 1.064). D2 and B share the same
+deformation-weighted column B (= SSA's); they differ in profile -- D2 keeps HO's soft base / stiff
+top -- so D2's upper layers are much stiffer than SSA's, which may resist stretching in fast
+streams more than B does.
+
+**5c case D2 blocked by allocation (2026-10-01).** D2's solve (job 180191459) never started: it sat
+queued through the end of 2026.q3, then was put on hold (state H, hold type "o") with comment
+"Project au88 does not have sufficient allocation to run job (3.46 KSU required)". nci_account:
+2026.q4 grant for au88 is 0 SU (used 0, avail 0); 2026.q3 granted 1.85 MSU, used 1.71 MSU, 138 KSU
+unused and lost at quarter end. No hugemem work can run until a q4 grant exists. The job, its
+.bin and queue script are intact; nothing was deleted. Once the q4 allocation arrives, release
+it with `qrls 180191459` (or resubmit execution/AIS3_ho_sbtest_D2_defweightedB/*.queue), then
+run the analysis as planned (PHASE=analyze, OUT_TAG=_v3).
+
+HO smoke result: driver ran (initial state built, TF anomaly 2020 +0.191 C, SMB +0.0048 m/yr on
+the base layer, mesh.z already in sync, 24 GB input .bin), but the 96-rank solve (180198606) failed
+at its first output: `IcefrontMassFlux error message: not implemented` (Element.h:313) -- ISSM
+implements it for 2D elements only. Removed from the HO outputs (analysis script tolerates its
+absence). Rerun of the smoke test waits on the Q4 grant (all au88 jobs held since 1 Oct:
+"insufficient allocation"). Cost of the failed test: 1040 SU driver + inner.
+
+### 6.6 LARMIP setup (2026-10-01)
+
+Request: 5+1 experiments (control + uniform extra sub-shelf melt per region), 200-yr yearly
+sea-level series, model description, BibTeX, authors, by 30 Oct; optional linear-ramp set.
+Implemented on the SSA track (HO not ready; HO uses Schoof, SSA uses Budd p=q=1):
+- `projection_ssp_ssa` LARMIP option (`AIS3_PROJ_LARMIP_REGION/_MODE/_AMP`, `AIS3_LARMIP_MASK`):
+  sets `md.basalforcings.melt_anomaly` (step: static field; ramp: time series 0/8/8 m/yr at
+  2019/2119/2219); CTRL forcing otherwise; ends 2219. ISSM adds melt_anomaly inside
+  Ismip6FloatingiceMeltingRate, i.e. only on fully floating elements. Mask loader checked offline
+  on the SSA mesh with a provisional Amundsen-only mask (147,122 vertices, 23,146 floating).
+- Existing settings already match what was agreed: `ismovingfront=0`, `melt_interpolation=
+  NoMeltOnPartiallyFloating`, `SubelementMigration`, `SubelementFriction1`, static SMB0.
+- `export_larmip.py`: yearly SLE (m) years 0-200, ISMIP-convention VAF; ISSM's own
+  IceVolumeAboveFloatation differs by ~6% on CTRL 2020-2050 (-15.73 vs -16.75 mm) because it
+  counts partially floating elements whole and does not clip negative height above flotation.
+- Drafts: `docs/larmip/model_description.tex` (+ .md) and `larmip_refs.bib`; three references
+  and the CTRL drift number still to be confirmed.
+- Smoke test queued (held on the Q4 grant): region 3 step, 3 yr, provisional mask, job 180251370,
+  to check the 0.1-yr timestep under 8 m/yr.
+
+LARMIP-3 mask (2026-10-01): downloaded from https://www.pik-potsdam.de/~anders/larmip3/ to
+`assets/larmip3/` (Infos text = the protocol as received; sector masks at 1/2/4 km, variable `z`,
+values 0-5). Numbering identified on the AIS3 mesh: 1 Weddell, 2 East Antarctica, 3 Ross,
+4 Amundsen, 5 Peninsula (floating areas 537k/205k/459k/91k/92k km^2; ~1,100 km^2 floating outside
+all sectors). The 1 km file is now the default mask. The provisional smoke test (180251370, region
+3 = Amundsen on my provisional mask) was deleted while held; resubmitted on the real mask as
+region 4 (180251895), 3 yr, 8 m/yr step. Core-run amplitude (8 m/yr) is not stated in the protocol
+text beyond the ramp's final value -- to confirm.
+
+### 6.7 Q4 grant in; progress, slow-node incident, LARMIP launched (2026-10-02)
+
+The 2026.q4 grant (2.00 MSU) arrived on 1 Oct and the held jobs ran.
+- CTRL: 2050 -> 2100 -> 2150 done; 2150-2200 running (step 352/500 after 2.9 h). Chunk solve times
+  vary with the node: 2019-2050 5h25 (31 yr), 2050-2100 10h17, 2100-2150 6h46 (50 yr each).
+- ssp370 (CESM2, ref): complete to 2100 (2019-2050 5h26, 2050-2100 10h18).
+- ssp126/ssp585 (CESM2, ref): 2019-2050 done (5h16/5h19). Their 2050-2100 solves (180285501 on
+  gadi-cpu-clx-1475, 180285537 on clx-1491) ran ~7 min per 0.1-yr step, ~5x slower than every
+  other chunk, with all 48 cpus busy, no solver warnings, inputs identical in size to ssp370's
+  (20.8 GB .bin) and the same 2050 state as the other scenarios; ssp370's identical chunk ran
+  normally alongside. Taken to be slow nodes. At step 119/130 of 500 after 15 h they could not
+  finish inside the 21 h limit, so both drivers and solves were deleted, the partial run
+  directories archived (`execution_SSA/..._2050-2100_killed_slownode_20261002`), and both chunks
+  resubmitted from their 2050 checkpoints (180326867, 180326868). ~2.9k SU lost.
+- LARMIP smoke (180251895, region 4 Amundsen, 8 m/yr step, 3 yr): stable at the 0.1-yr step, 16 min;
+  floating BMB 760 -> 1387 Gt/yr (+627 vs 8 m/yr x 91,000 km^2 = 668 Gt/yr; extra melt only on
+  fully floating elements).
+- LARMIP core runs launched: larmip_r1..r5_step, 180326869-73 (control = the CTRL chain).
+- Checked: the ~115k floating vertices at the 1 m minimum thickness are ocean cells outside the
+  ice mask (114,315 at 2019); inside the ice mask 390 at 2019, 2,798 by 2150 in CTRL.
+
+**5c case D2 solved** after the 2026.q4 grant arrived (2.00 MSU): job 180191459 was released and ran
+on 2026-10-01, exit 0, 61 min, .outbin written. Five-case analysis submitted
+(`qsub -v PHASE=analyze,OUT_TAG=_v3 launch_ho_stressbalance_tests.pbs`); D2 submit-phase logs kept
+as launch_ho_stressbalance_tests_submit4.pbs.out/.err.
+
+**Later 2026-10-02 -- first forced result and stage-2 launch.** ssp370/CESM2 (ref melt) minus CTRL:
++0.02 mm (2020), -8.6 mm (2050), -57.5 mm (2100): under ssp370 the model *lowers* sea level relative
+to the control. Expected direction given the inputs -- SMB increases with warming and the reference
+melt (gamma_0=300) responds to ocean warming only ~4% as strongly as the ocean models (6.1) -- but at
+the low end of ISMIP6-type ranges. CTRL drift over 2019-2150 is -0.463 mm/yr; 2150 basin pattern as
+before (only b8/b9 lose). The attribution and high-melt runs below test this directly.
+
+Launched (budget ~200k SU for this campaign, user): LARMIP ramps r1-r5 (180326922-26); stage 2,
+SSA: ssp585/ssp370 CESM2 high melt (180327202/03), ssp585 CESM2 ocean-only/SMB-only (180327205/06),
+MRI-ESM2-0 ssp126/ssp585/ssp370 (180327207-09), ssp370 x ACCESS-CM2, CanESM5, GFDL-ESM4,
+IPSL-CM6A-LR, MPI-ESM1-2-HR to 2100 (180327210-14). ~60k SU for stage 2, ~130k SU committed in
+total. Climatology cache temp files now carry hostname+pid (several runs of one GCM start together).
+
+**5c case D2 RESULT** (analysis job 180326968; plot models/ho_stressbalance_tests_v3.png).
+Median grounded surface-speed ratio to observed: A 1.09, B 1.02, C 1.09, D 1.04, **D2 1.00**
+(area-mean 21.8 vs observed 22.9 m/yr, SSA 22.1). Median D2/A 0.921.
+- D2 brings every basin to within ~6% of observed and removes the excess D left: b3 0.97 (D 1.10),
+  b4 1.00 (1.10), b5 0.99 (1.14), b15 1.03 (1.12), and West Antarctica b8 1.00 (1.10), b9 0.98
+  (1.04), b10 1.00 (1.08), b11 1.00 (1.06). It does NOT over-stiffen the fast streams in the
+  median; the remaining WA excess after B was also a basal-softness effect.
+- Slight undershoot in places: b14 0.94, b1 0.96, b2 0.98, b9 0.98; the area-weighted mean
+  (21.8) sits ~5% below observed and ~1% below SSA, while the median is 1.00 -- i.e. some of the
+  larger/faster areas are a little slow. Map: D2 is the closest to white overall, with scattered
+  purple (too slow) patches in the East Antarctic interior and around parts of the coast, similar
+  in extent to B's and more than D's; margins still show orange/purple speckle from mesh-scale noise.
+- Ranking for a pragmatic fix: D2 (median exactly 1.00, best in WA and the soft-base basins,
+  mild slow bias in a few EA basins) > B (1.02, discards HO's vertical profile) > D (1.04).
+- These are diagnostic solves (zero basal melt, HO friction inverted with the OLD soft B, relaxed
+  geometry from the old-B relaxation); the pairing of D2's B with that friction is not
+  self-consistent, but the residual is now within the inversion's own error level.
+
+## 5d. D2 rheology adopted in the HO chain (code change, not yet run)
+
+User decision (2026-10-02): adopt D2. `config/ais_0.1.py` (backup `ais_0.1.py.pre_d2_backup`):
+- New helper `rescale_rheology_B_d2(md, B_ref_2d)`: per-column rescale keeping the vertical
+  profile; grounded columns match the deformation-weighted B (w = (1-sigma)^(n+1)), floating
+  columns the plain mean; idempotent.
+- `ho_thermal_steadystate`: B = cuffey(3D T) is now rescaled (D2) to the input model's pre-thermal
+  B, which also restores the inverted shelf rheology the old code overwrote. Only affects future
+  reruns of the thermal step.
+- `ho_relaxation`: after SMB/mesh-z setup, applies D2 against AIS3_inverted.nc's rheology_B (the
+  current melt-tuned file still carries the old unscaled B). No-op once the chain is rebuilt.
+Reference note: AIS3_inverted.nc (HO track) and AIS3_SSA_inverted.nc (SSA track, used in the 5c
+tests) have identical grounded B but different inverted shelf B (14% of vertices differ, ratio
+0.63-1.43 at p1-p99). The HO chain uses its own AIS3_inverted.nc, so shelf B (and buttressing)
+differs slightly from the tested D2 case; grounded speed should be close to the tested result.
+Not changed: the HO friction field (still inverted with the old soft B), the one-chunk friction
+bookkeeping lag, and the melt calibration (a mass-transport-only transient, independent of B).
+Next: rerun ho_relaxation with D2 B, then the relaxed-start HO historical rerun.
+
+**5d: HO relaxation rerun with D2 submitted** (job 180330595, `qsub -v AIS3_STEPS=ho_relaxation
+launch_ho_relaxation.pbs`). Archived first (mv -n, nothing deleted): models/AIS3_ho_relaxed.nc ->
+AIS3_ho_relaxed_oldB.nc (the 2026-09-29 relaxed-with-old-B run), execution/AIS3_ho_relaxed ->
+AIS3_ho_relaxed_oldB, launcher logs -> launch_ho_relaxation_oldB.pbs.out/.err. Earlier
+zero-SMB relaxation still kept as AIS3_ho_relaxed_prerelaxfix.nc.
+
+**5d relaxation startup** (driver 180330595, inner compute job 180332266): D2 applied as tested --
+grounded scale median 1.430 (p10 1.064, p90 2.261), same as the test; floating median 0.758 (test
+D, against SSA-track shelf B: 0.757), so despite the shelf-B differences between the two tracks
+the median shelf correction is the same. mesh.z resync before the solve showed the same stale-z
+signature as the old-B relaxation (198,014 columns, max 90 m), as expected since both start from
+AIS3_melt_gamma_tuning.nc.
+
+**2026-10-02 afternoon -- progress check; ssp585 slow again; 25-yr chunks.** CTRL reached 2200
+(15:26). 25 running solves at 60-165 steps/h (LARMIP core and ramps, stage 2, ssp126 rerun) except
+ssp585/CESM2 ref 2050-2100 rerun (180327838, gadi-cpu-clx-2103): 48/500 after 2.25 h, then 2 steps
+in 7 min (~3.5 min/step, ~5x normal), while ssp126's rerun of the same chunk is normal (210/500).
+Second slow attempt for this chunk on a different node, so possibly specific to this run (cause not
+identified: the CESM2 ssp585 TF files for 2045-2100 are clean, max 10-12 C, no fill values; the
+2050 state matches the other scenarios). Deleted (driver 180326868 + solve), run directory archived
+(`..._2050-2100_killed_slow2_20261002`), resubmitted (180334483).
+Code: chunk edges now 2019, 2050, then every 25 yr (2075 ... 2300); inner solve time request 3x the
+12.6 min/yr estimate (16 h per 25-yr chunk), so a solve at ~1/3 normal speed still finishes.
+Running chunks keep their old 50-yr length; chains switch at their next chunk. If ssp585 2050-2075
+is slow a third time, run a short diagnostic with stress-balance convergence output on.
+
+**5d relaxation with D2 RESULT** (driver 180330595, exit 0, 2026-10-02 22:56, 8h29m, 1221 SU).
+Over the 1 yr: mean|dH| 6.07 m (old-B 6.60), max 1155.17 m (old-B 868.37), grounded/floating
+changed at 1.077% of vertices (old-B 1.113%); initialization velocities set from the last step.
+Mean adjustment down ~8% with the stiffer grounded ice; the larger max is a local extreme (likely
+margins/shelves, where D2 softened the shelf B to the inverted value, median factor 0.758) --
+not yet located. New models/AIS3_ho_relaxed.nc (2026-10-02 22:56); AIS3_ho_relaxed_oldB.nc and
+AIS3_ho_relaxed_prerelaxfix.nc kept. HO historical rerun not started: awaiting user go-ahead.
+
+### 6.8 Status 2026-10-06; MRI calendar bug; lost MPI driver
+
+Complete: CTRL (2300); all 10 LARMIP runs (step + ramp, to 2219); ssp126/CESM2 (2300); ssp585/CESM2
+ocean-only and SMB-only (2300); ssp370 x CESM2 ref + high, MRI, ACCESS-CM2, CanESM5, GFDL-ESM4,
+IPSL-CM6A-LR (2100). Running: ssp585/CESM2 ref (2275-2300), ssp585/CESM2 high (2250-2275).
+au88 Q4 use 177k SU of 2.0 MSU (whole project).
+
+- **ssp585 slow chunk was the node after all**: the third attempt at 2050-2075 took 3h25 (later
+  ssp585 chunks 2.6-3.5 h). Chunk-time growth is real for the high-melt run, though:
+  ssp585 high 2100-2125 7h51, 2225-2250 11h56 (ref ~3.5 h) -- stronger melt and retreat make each
+  solve harder. The 3x time request covers it (2250-2275 projected ~9.4 h of 16 h).
+- **MRI-ESM2-0 ssp126/ssp585 drivers failed at the 2250->2275 chunk**: `open_mfdataset` "Cannot
+  combine along dimension 'time' with mixed types (Timestamp, DatetimeProlepticGregorian)" -- MRI's
+  proleptic-Gregorian dates decode as pandas timestamps before ~2262 and cftime after. CESM2 (noleap)
+  never mixes. Fixed in both projection steps (decode TF times as cftime throughout; tested on the
+  MRI 2241-2290 files). Both resubmitted from 2250 (180576566/67).
+- **ssp370/MPI-ESM1-2-HR stuck at 2050**: its 2050-2075 solve finished normally (3h41, exit 0,
+  3 Oct 00:43) but the driver left no checkpoint, no next chunk and no PBS log; the job is no longer in
+  PBS history, so the cause is unknown (the only one of ~120 chunk drivers). Run directory archived
+  (`..._2050-2075_driverlost_20261006`), rerun from 2050 (180576568).
+
+### 6.9 LARMIP series exported (2026-10-06)
+
+`export_larmip.py --ramp` (batch job 180580366, 4 min after fixing the reads: `dict(np.load(f))`;
+indexing an NpzFile re-reads the whole array every time, which made the login-node run time out;
+same fix in check_projection_ssa.py) -> `docs/larmip/AIS3_ssa_larmip_sle.csv`, 11 series x 201 years,
+complete. Response at year 200, experiment minus control (mm SLE, ISMIP-convention VAF):
+
+| sector | step | ramp |
+|---|---|---|
+| 1 Weddell | 51.5 | 35.4 |
+| 2 East Antarctica | 23.1 | 17.0 |
+| 3 Ross | 27.5 | 20.8 |
+| 4 Amundsen | 11.9 | 9.6 |
+| 5 Peninsula | 3.5 | 3.0 |
+
+Control: -88.7 mm over 200 yr, rate -0.56 (first 30 yr) -> -0.39 mm/yr (last 50 yr); the model
+description now states this.
+- VAF method matters: with ISSM's own IceVolumeAboveFloatation the year-1->200 differences are
+  Weddell 58.4, East Antarctica 26.0, Ross 31.7, Amundsen 13.8, Peninsula 4.6 mm (8-30% higher).
+- The Amundsen response is small for the sector usually most sensitive in marine-ice-sheet terms;
+  not investigated yet (it has the smallest floating area of the large sectors, 91,000 km^2, and the
+  setup uses linear Budd sliding, fixed calving front, no melt on partially floating elements).
+
+### 6.10 BUG: walltime-killed solves were adopted as complete chunks (time skipped) -- fixed
+
+Found from straight segments in `docs/figures/projections_ssa.png`. Three inner solves hit their 16 h
+limit (slow nodes: 63, 121 and 215 of 250 steps): ssp126/CESM2 2225-2250 (stopped at 2231.3),
+ssp585/CESM2 ref 2225-2250 (2237.1), ssp585 SMB-only 2125-2150 (2146.5). pyissm loaded the partial
+outbin without error; the driver adopted the last step and saved it as the chunk-end checkpoint, then
+chained on. Net effect: those runs skipped 19, 13 and 4 model years, and everything after is invalid.
+A scan of all 188 projection solve directories found no other walltime kills (LARMIP unaffected; its
+export had all 201 years for all 11 series).
+- Fix (SSA and HO steps): after loading results, stop with SystemExit unless the last output time
+  equals t1 -- no history, no checkpoint, no next chunk.
+- Archived (renamed `*_INVALID_timeskip`, nothing deleted): ssp126 and ssp585 ref checkpoints after
+  2225, SMB-only after 2125, with their histories and run directories (24 files, 13 dirs); the
+  ssp585 ref 2275-2300 chunk then running on the bad state was deleted (180566473/180567047).
+- Restarted from the last valid checkpoints: ssp126 and ssp585 ref from 2225, SMB-only from 2125
+  (180581952-54).
+- Drivers already running when the guard went in (ssp585 high 2250-2275; MRI ssp126/ssp585 from 2250;
+  MPI ssp370 from 2050) do not have it: check their chunk end times by hand.
+
+**5d: where the D2 relaxation's max |dH| is** (`check_ho_relaxed_d2_extremes.py`, job 180575405;
+plot models/ho_relaxed_d2_extremes.png). dH = relaxed end state minus relaxation input.
+- Overall D2 has FEWER large changes than the old-B relaxation: |dH| > 100 m 6,445 vs 7,157;
+  > 300 m 354 vs 378; > 500 m 47 vs 52. By basin (>300 m) D2 is lower in b3 (44 vs 71) and b6
+  (18 vs 24), higher in b7 (21 vs 16), b12 (19 vs 15), b13 (4 vs 1), b14 (22 vs 14).
+- The 1155 m maximum is at x=389.5 km, y=-1186.3 km (78.55 S, 161.82 E; basin 7), the western
+  margin of the Ross Ice Shelf by the Transantarctic Mountains. Floating at start and end, 1938 m
+  thick at ~flotation over a -1737 m bed (a deep, narrow inlet). It is a coherent ~20-40 km strip
+  along the grounding line (window +-150 km: 76 vertices > 100 m in D2 vs 59 in old B), not one
+  vertex. The old-B run already had the same spot as its maximum (-868 m). Modelled speed there is
+  wildly too fast in BOTH runs: observed 4 m/yr, old B 529, D2 867; neighbours obs 33-46 vs D2
+  316-680 / old 190-432. D2's floating-column rescale softened these columns (D2/old column-mean
+  B 0.38-0.83), consistent with D2 amplifying a pre-existing local problem (likely the inverted
+  shelf B and/or poorly resolved geometry in the inlet) rather than creating a new one.
+- About half of the top 25 are vertices with zero modelled and observed speed whose thickness
+  collapsed to the 1 m floor IDENTICALLY in both runs (e.g. b8, b9, b4, b5, b6 shelf-edge
+  points): isolated/detached ice outside the active flow, unrelated to D2.
+- The rest are grounding-zone G->F transitions with similar dH in both runs (b3, b1, b14).
+
+## 5e. Relaxed-start HO historical rerun with D2 rheology (started 2026-10-06)
+
+User approved, accepting the western-Ross-margin inlet artifact as a known local issue (5d).
+New launcher `config/launch_historical_relaxfix.pbs` (sets AIS3_STEPS=historical_dhdt_tuning,
+AIS3_HIST_TAG=_relaxfix; own log names, so the finished run's launcher logs are untouched).
+Outputs: models/AIS3_historical_1995_2019_relaxfix.nc (checkpoint), per-chunk
+..._relaxfix_history_<t0>-<t1>.npz, execution/AIS3_historical_1995_2019_relaxfix. Starts from the
+D2-relaxed models/AIS3_ho_relaxed.nc. Chunk 1 (1995-2001): job 180584759. Resubmit the same
+launcher for chunks 2-4, archiving its .out/.err with a chunk suffix (mv -n) each time.
+
+### 6.11 Campaign results (2026-10-07; SMB-only rerun at 2250, finishing)
+
+All other runs complete; no gaps in any series; the four pre-guard chunks reached their end years.
+Sea level minus CTRL (mm, + = rise), ISMIP-convention VAF (`models/proj_ssa_sle_series.csv`,
+`docs/figures/projections_ssa.png`):
+
+| run | 2100 | 2150 | 2200 | 2250 | 2300 |
+|---|---|---|---|---|---|
+| ssp126 CESM2 | -43 | -82 | -121 | -167 | -213 |
+| ssp585 CESM2 ref | -73 | -143 | -148 | -19 | +211 |
+| ssp585 CESM2 high melt | -59 | -97 | -62 | +86 | +313 |
+| ssp585 CESM2 ocean only | +1 | +4 | +10 | +19 | +31 |
+| ssp585 CESM2 SMB only | -74 | -147 | -156 | -33 | (running) |
+| ssp126 MRI | -18 | -37 | -62 | -91 | -124 |
+| ssp585 MRI | -42 | -80 | -80 | -60 | -39 |
+
+ssp370 in 2100 across seven GCMs: -34 (MPI) to -64 (ACCESS-CM2); CESM2 -57, high melt -44.
+- The CESM2 ssp585 reversal (minimum ~-155 mm near 2185, +211 mm by 2300) is SMB-driven: the
+  SMB-only run follows the combined run through the turn (-33 vs -19 mm at 2250) and ocean-only +
+  SMB-only (-14) is close to the combined run, i.e. near-additive. MRI ssp585 turns only weakly
+  (-80 -> -39), so the size of the reversal is GCM-specific.
+- Ocean forcing alone gives +31 mm by 2300 with the reference melt; high melt (gamma_0=15000) adds
+  ~100 mm by 2250-2300 at ssp585 but only +13 mm by 2100 at ssp370.
+
+**5e chunk 1 done** (driver 180584759, inner 180607207; exit 0, 2026-10-07 00:30, driver walltime
+10h26m, solve 6h32m, 1501 SU). Fresh start from the D2-relaxed model confirmed; mesh.z mismatch
+at start 0 m. Outputs: models/AIS3_historical_1995_2019_relaxfix.nc (73 GB) and
+..._relaxfix_history_1995-2001.npz (7 states: t=1995.1, 1996, ..., 2001). The finished run
+(AIS3_historical_1995_2019.nc, 2026-09-25 03:14) is untouched. Only 7 states because
+`ais_0.1.py` now sets `md.settings.output_frequency = 10` in historical_dhdt_tuning (edited
+outside this session on 2026-09-30: "annual output ... loading every 0.1-yr 3D step made the
+driver job need 500-700 GB"), and the history writer now reads the real solution times; this also
+explains the smaller checkpoint. Annual states are what the dH/dt analyses use. Logs kept as
+config/launch_historical_relaxfix_chunk1.pbs.out/.err. Chunk 2 (2001-2007): job 180708117.
+
+**5e chunk 2 done** (driver 180708117, inner 180730490; exit 0, 2026-10-08 03:10, driver walltime
+11h33m, 1663 SU). Resumed correctly from t=2001.0; the pre-sync mesh.z mismatch on resume (base
+max 697 m, 1.47M columns) is expected -- z still held chunk 1's start geometry until sync_mesh_z.
+Wrote ..._relaxfix_history_2001-2007.npz; 1995-2001 history kept; finished run untouched. Logs
+kept as launch_historical_relaxfix_chunk2.pbs.out/.err. Chunk 3 (2007-2013): job 180779544.
+
+**2026-10-08.** SMB-only rerun: its 2250-2275 solve (180698031, gadi-cpu-clx-0007) was walltime-
+killed at 178/250 steps (11 steps/h; this run's previous chunk managed 59/h, and the combined
+ssp585 run did 2250-2275 in 5h20 under the same SMB, so a slow node, not the forcing). The guard did
+not get to act: a killed solve never writes the lock file, so the driver (180697637) sat out its
+wait budget (24 h of 44.5 h used, ~64 SU/h idle) -- deleted by hand. Run directory archived
+(`..._2250-2275_killed_walltime_20261008`); resubmitted from 2250. No bad output was written.
+Still open: the driver cannot tell a killed solve from a queued one, so a kill costs up to the
+whole wait budget in idle driver time.
+Noted: CESM2 ssp585 dEBM2 SMB anomaly reaches -3.1 (2250) and -3.8 (2275) m ice eq/yr as a mesh
+mean (SMB0 0.54) -- the SMB-driven reversal in 6.11.
+
+**5e chunk 3 done** (driver 180779544, inner 180796316; exit 0, 2026-10-09 00:37, driver walltime
+10h30m, 1513 SU). Wrote ..._relaxfix_history_2007-2013.npz; earlier histories kept; finished run
+untouched. Logs kept as launch_historical_relaxfix_chunk3.pbs.out/.err. Chunk 4 (2013-2019, final)
+submitted (job 180846839).
+
+**5e chunk 4 done -- run complete** (driver 180846839, inner 180861817; exit 0, 2026-10-09 20:50,
+driver walltime 10h26m, 1503 SU). "Final chunk complete -- full 1995-2019 run finished".
+- Wrote ..._relaxfix_history_2013-2019.npz; all four history files are present. The checkpoint
+  models/AIS3_historical_1995_2019_relaxfix.nc is 73 GB.
+- Logs kept as launch_historical_relaxfix_chunk4.pbs.out/.err. The finished run is untouched.
+- Grounded dH/dt RMSE vs dhdt_cpom: **1.593 m/yr**. Old HO run 1.768; SSA historical 1.402.
+- Same caveat as before: this is a spatial RMSE of the run's dH/dt field against a single CPOM
+  field, not the area-weighted, fixed-coverage, per-basin time-series comparison of 4s-4u.
+  That comparison (relaxfix vs old HO vs SSA) has not been done yet.
+- Total cost of the rerun (4 chunks): ~6180 SU.
+
+### 6.12 ISMIP7 ice-shelf collapse (fracture path C) added (2026-10-09)
+
+Option `AIS3_PROJ_COLLAPSE=1` (+ `AIS3_PROJ_COLLAPSE_VER`) in `projection_ssp_ssa`. It is off by
+default, so existing experiments are unchanged. Collapse runs get a `_collapse` suffix, so
+nothing is overwritten. The HO `projection_ssp` refuses the option (NotImplementedError) until
+the method is ported.
+- Mask: `fracture/<ver>/ice_shelf_collapse_mask_*` for the run's GCM/scenario; newest version by
+  default (CESM2 v2.1, MRI v2 or v1). Annual int8 0/1 on the TF 8 km grid (checked at run
+  time), years 1950-2299 (ssp370: to 2100). None for ssp245, ctrl or the ssp370-only GCMs.
+- **Attempt 1, extra melt (dropped).** 1e4 m/yr `melt_anomaly` on masked vertices, which ISSM
+  applies only under fully floating elements.
+  - Smoke 180848028 (2019 mask, 0.2 yr): nothing to test, because all 81 masked mesh vertices
+    in 2019 are already ice-free. These are Peninsula shelves gone before our start.
+  - Masked floating-ice vertices: 1,399 by 2050 and 33,830 by 2100.
+  - Smoke 180848732 (2100 mask via `AIS3_PROJ_COLLAPSE_SMOKE_SHIFT=81`, 0.5 yr, 38 SU): 97%
+    of masked floating vertices reached 1 m. But the solve blew up: max speed 4.3e9 m/yr,
+    thickness spikes to 20 km, IcefrontMassFlux 1.5e3 -> 2.1e6, -5.1 mm SLE in 0.5 yr.
+  - Cause: thick shelf remnants embedded in 1 m ice have almost nothing holding them, and the
+    fixed 0.1-yr step cannot follow.
+  - History archived as ..._collapse_2019-2020_smoke_meltanomaly_history.npz.
+- **Attempt 2, levelset removal between sub-solves (current).**
+  - The chunk is split at each 1 January on which the mask changes on the mesh.
+  - Before each sub-solve, masked vertices holding floating ice become ice-free (ice_levelset
+    +1, H = 1 m, floating). So do floating pieces that this newly cuts off from grounded ice:
+    connected components over fully-ice elements; the 64 already-detached vertices in the
+    init state are left alone.
+  - With ismovingfront=0 the new edge is an ordinary front.
+  - Each sub-solve gets only the forcing columns around its own years (TF is 30 depths x 1.59M
+    x 27 columns, ~10 GB per chunk).
+  - The walltime guard runs per sub-solve. History gets `collapsed_at`.
+  - Cost: one inner job and queue wait per mask change, i.e. roughly annual after ~2030 under
+    ssp585.
+- Smoke 180862834 (2100 mask, 1.5 yr): NaN at step 4; 100 nonlinear iterations every step.
+  - The failed solve wrote no lock file, so the driver sat waiting (6.10); killed by hand.
+  - `check_collapse_smoke.py`: 1e15-1e17 m/yr at small grounded patches left by the cut
+    (65.8S 99.8E, 69.2S 31E). These have friction coefficient exactly 0 (40,851 of 1.26M
+    grounded ice vertices have fc = 0), and/or join the sheet only at single vertices or
+    through partly grounded elements.
+  - Fix: a piece is held only if it is joined across shared edges to an element that is fully
+    grounded with fc > 0 at all three vertices. After a cut, pieces that are not held are
+    removed if newly cut off, inside the mask, or touching the cut.
+  - On the 2100 mask: 33,830 cut + ~1,230 such pieces removed; pieces far from the collapse
+    are left as in the baseline.
+- Smoke 180869085: rejected by the consistency check ("base = bed on grounded ice"). Removed
+  grounded pieces keep ocean_levelset > 0 but float at 1 m. Fix: removed vertices take the
+  flotation state of 1 m ice (base hydrostatic, ocean_levelset -1 where it floats).
+- Smoke 180869837: no NaN, no singular modes.
+  - Max speed 1.4e5 m/yr (t=2019.1) and 1.9e5 (2019.2) at newly exposed thin grounded fronts
+    (67.5S 59.5E; 66.1S 99.8E), which thin fast (574 -> 144 m). Then 2.0e4 (2019.3) and
+    1.7e4 (2019.4), at the 2,240 m Amery-area front left at 73.0S 67.5E.
+  - Ice faster than 20 km/yr: 546 vertices -> 0 by t=2019.4.
+  - Every step hit the 100-iteration cap (~12 min/step vs ~1.3 normally). The 1-h inner job
+    was walltime-killed at t=2019.5; the guard stopped the chain correctly.
+  - Read: the mechanism works, and the cost is slow steps after a big collapse. This test
+    removes 300k km² at once on 2019 geometry; real masks arrive yearly (1,399 floating ice
+    vertices by 2050).
+  - Collapse sub-solves now get an inner time of max(4 h, 10x the normal rate).
+
+**2026-10-09 -- campaign complete.** All 26 SSA experiments reached their end years (CTRL and SSPs
+to 2300 or 2100, LARMIP to 2219); the SMB-only rerun finished 9 Oct 01:50 (last two chunks 5h23,
+6h00). Final series `models/proj_ssa_sle_series.csv` (no missing years) and
+`docs/figures/projections_ssa.png`. SSP5-8.5 CESM2 attribution at 2300 (minus CTRL): SMB only +193,
+ocean only +31, sum +224, combined +211 mm -- near-additive, SMB-dominated.
+
+**6.12 launch (2026-10-13).** `ssp585_cesm2_ref_ref_collapse` started from 2019 with the real
+yearly v2.1 masks (driver 181109462; logs/proj_ssa_ssp585_cesm2_ref_ref_collapse_2019.out).
+Before release, the driver got an early chunk end: a collapse chunk has ~30 sub-solves (one
+per mask change). If driver time left < the next sub-solve's inner time + 1 h, the chunk ends
+at that mask-change year, writes its checkpoint and queues the next chunk. Otherwise a long run
+of queue waits would hit the wait budget and lose the whole chunk. Non-collapse runs are
+unchanged: one sub-solve, so the check never triggers.
+
+### 6.13 Figures: relaxed-HO historical comparison and continental maps (2026-10-13)
+
+**Historical dH/dt, relaxed-start HO (D2) vs old HO vs SSA vs CPOM**
+(`config/plot_historical_relaxfix_comparison.py`; `docs/figures/historical_dhdt_relaxfix_{domain,basins}.png`).
+Same fixed-coverage grounded mask as 4s/4w/4x/5b (599,285 vertices, 7.563 Mkm^2); SSA and CPOM
+recomputed and identical to the earlier output (max difference 0.0000 m/yr), old HO taken from that
+output. Whole domain, Gt/yr (1996-2001 | 2002-2013 | 2014-2019):
+
+| | 1996-2001 | 2002-2013 | 2014-2019 | RMSE vs CPOM (m/yr) | corr |
+|---|---|---|---|---|---|
+| CPOM | +33.0 | -24.5 | -56.9 | | |
+| SSA | -103.5 | -44.4 | -47.9 | 0.0110 | +0.14 |
+| HO, old (unrelaxed) | -222.3 | -114.4 | -111.7 | | |
+| **HO, relaxed + D2** | **-80.3** | **-29.8** | **-29.1** | **0.0096** | +0.13 |
+
+- The relaxed, D2 HO run removes most of the old HO's excess thinning (~-110 -> ~-30 Gt/yr after
+  the start-up years) and is now at least as close to CPOM as SSA in the mean; start-up transient
+  smaller than SSA's (-80 vs -104 Gt/yr in 1996-2001). Neither has interannual skill (corr ~0.13).
+- It under-thins 2014-2019 (-29 vs CPOM -57). Amundsen (basin 9) unchanged in character: -87/-91/-74
+  vs CPOM -32/-65/-97 -- over-thins early, misses the acceleration, as SSA does.
+- Basin 10 improves (RMSE 0.134 SSA -> 0.086 HO), basin 8 too (0.129 -> 0.089).
+
+**Continental maps** (`config/plot_continental_maps.py`; symmetric-log diverging scale, +-5 m linear):
+- `docs/figures/maps_larmip_dH.png`: step runs minus control at 2219. Thinning stays within each
+  sector's shelves and the grounded ice just upstream; Weddell reaches furthest inland; Amundsen is
+  confined to its narrow coastal shelves.
+- `docs/figures/maps_projections_dH.png`: CESM2 runs minus control at 2100/2300, and control drift.
+  Interior thickens under every SSP (SMB); margins/shelves thin; by 2300 under ssp585 the whole
+  coastal margin thins (the SMB-driven reversal). Control drift shows metre-scale interior speckle.
+  Checked a suspected 180-degree seam over the Ross sector: SMB anomaly, melt and thickness differences
+  are smooth across x = 0 -- the bands are a smooth field crossing zero plus along-flow streaks.
+
+**5e area-weighted comparison** (`check_ho_relaxfix_historical_timeseries.py`, job 181111485).
+Same fixed-coverage grounded mask as 4w/4x (599,285 vertices, 7.563 Mkm², identical to v2).
+Old-HO numbers are parsed from the v2 log. Outputs: models/ho_relaxfix_historical_dhdt_
+{domain,basins}.png and ..._series.npz.
+
+Whole domain, Gt/yr:
+
+| run | 1996-2001 | 2002-2013 | 2014-2019 | 1996-2019 |
+|---|---|---|---|---|
+| HO relaxed start | -80 | -30 | -29 | -42 |
+| old HO | -222 | -114 | -112 | -- |
+| SSA | -104 | -44 | -48 | -60 |
+| CPOM | +33 | -25 | -57 | -18 |
+
+- Yearly RMSE vs CPOM, 1996-2019: HO relax 0.0096 m/yr, SSA 0.0110.
+- On the 12 years old HO has: old HO 0.0273, HO relax 0.0131, SSA 0.0149. Correlation with
+  CPOM stays low (+0.13 HO relax, +0.14 SSA).
+- Reading: the relaxed start removes most of HO's excess thinning. 2002-2013 is now close to
+  CPOM (-30 vs -25 Gt/yr), and HO relax beats SSA in every period. The start-up transient is
+  much smaller but not gone (-80 vs +33 in 1996-2001). After 2014 it loses too little (-29 vs
+  -57).
+- Per basin, HO relax has the lower yearly RMSE in 8 of 16, mostly the small or noisy basins
+  (8, 10, 11, 13) plus 0, 2, 6, 9. SSA is closer in 1, 3, 4, 5, 7, 12, 14, 15.
+- Basin 9 (largest loss): both runs ~-85 vs CPOM -65 Gt/yr; neither captures the observed
+  acceleration (-32 -> -97).
+- Basin 14: HO relax +16 vs SSA +29 vs CPOM +27 Gt/yr, i.e. HO under-thickens there.
+
+### 6.13 HO projections started (2026-10-13)
+
+User approved, after the 5e comparison: ctrl + ssp585 ref to 2100, from the relaxed-start 2019
+state (`AIS3_PROJ_HIST_TAG=_relaxfix`, the default).
+- Step 1: smoke test ssp585/CESM2-WACCM, 0.2 yr (driver 181116872,
+  logs/proj_ho_relaxfix_smoke_ssp585_cesm2.out). It also builds
+  models/AIS3_proj_ho_relaxfix_init.nc and ..._baseline.npz once.
+- The full runs wait for that build, so that two drivers do not write the same init file. The
+  old-run smoke files (AIS3_proj_ho_init.nc, AIS3_proj_ho_baseline.npz, tag '') are untouched.
+- Allocation 2026.q4: 1.75 MSU available. Estimate ~38k SU per HO run to 2100.
+
+### 6.14 LARMIP response vs LARMIP-2 (2026-10-13)
+
+LARMIP-2 8 m/yr step results, 17 models (Levermann et al. 2020, ESD 11:35; data from
+pik-potsdam.de/~anders/larmip/Experiments/*_BM08_R[1-5].dat). Region order assumed R1 EAIS, R2
+Ross, R3 Amundsen, R4 Weddell, R5 Peninsula: the panel order of the paper's Figs 4/10; the text
+never defines the numbering. Ours: experiment minus CTRL, ISMIP-convention VAF, mm SLE.
+
+| region | ours y100 | L2 median y100 (p05-p95) | ours y200 | L2 median y200 (min-max) | our rank of 18 at y200 |
+|---|---|---|---|---|---|
+| East Antarctica | 9.7 | 77.5 (25-250) | 23.1 | 162 (30-506) | 1 |
+| Ross | 12.2 | 76.2 (43-147) | 27.5 | 189 (89-468) | 1 |
+| Amundsen | 6.1 | 42.0 (13-107) | 11.9 | 76 (-2.5-208) | 2 |
+| Weddell | 18.7 | 123 (62-306) | 51.5 | 313 (129-677) | 1 |
+| Peninsula | 2.4 | 7.4 (0.3-41) | 3.5 | 15 (2.7-113) | 2 |
+
+- Rank 1 means the smallest response; ours is ~4-8x below the LARMIP-2 median everywhere.
+- ISSM JPL / UCI at y200: EAIS 162/359, Ross 110/167, Amundsen 70/174, Weddell 244/333,
+  Peninsula 21/48 mm.
+- Forcing checked: extra TotalFloatingBmb vs CTRL is +3830 (r1 Weddell), +1440 (r2 EAIS) and
+  +3280 (r3 Ross) Gt/yr from the first output, steady over 2019-2050, i.e. 8 m/yr on each
+  sector's floating area. So the melt is applied, and the weak response is the ice sheet's.
+- Not yet diagnosed. Candidates:
+  - linear Budd sliding (p=q=1) with the inverted friction;
+  - fixed front;
+  - no melt on partially floating elements;
+  - how far the shelves actually thin under 8 m/yr with this rheology.
+- Caveats:
+  - LARMIP-3 sectors are not the LARMIP-2 regions;
+  - initial states differ (ours: 2019 end of the historical run);
+  - LARMIP-2 files are assumed control-free/control-subtracted (one model, MALI DOE, is noted
+    in the paper as drift-corrected).
+
+**6.14 diagnosis** (`check_larmip_response.py`, job 181123202; models/larmip_response_check.png).
+Weddell (r1) and Amundsen (r4) step runs vs CTRL; VAF here is ISSM's own, as in 6.9.
+- Shelves thin almost completely, i.e. buttressing is mostly removed:
+  - Weddell shelf mean H 576 -> 20 m by y200 (92% of the initial shelf area at <= 2 m);
+  - Amundsen 318 -> 49 m (76%).
+- The grounded ice barely responds:
+  - Weddell: grounded speed exp/ctrl x1.14-1.20 within 150 km of the GL, x1.03 beyond;
+    100k km² of grounded area lost by y200; GL flux +102 Gt/yr.
+  - Amundsen: speed x1.05 at every distance; 21k km² lost; GL flux +17 Gt/yr at y50, falling
+    to +0 by y200 (re-equilibrated).
+  - Still-grounded ice within 20 km of the GL thins only 8-17 m (median) vs CTRL.
+- So the low LARMIP response is not weak forcing or weak shelf thinning. Our grounded ice is
+  insensitive to losing its shelves.
+- Candidates, in order:
+  1. Friction `coupling=3`: effective pressure prescribed and fixed in time. Drag does not fall
+     as ice thins towards flotation, so the usual Budd-law GL feedback is off. Its direct
+     effect so far looks modest (only 14-29% of near-GL grounded vertices would have flotation
+     N < 0.5x the prescribed N), because the ice hardly thins. That is circular, though: with N
+     coupled, thinning would itself lower drag.
+  2. Linear (viscous) sliding, p = q = 1: speed scales only linearly with the stress change.
+  3. Inverted friction is high right at the GL (median C 111-178 within 20 km), which may carry
+     the force balance that buttressing carries in other models.
+- Test before the LARMIP submission: a 50-yr Amundsen step run (+ CTRL) with N coupled to
+  flotation (coupling 2) and C rescaled so that the initial basal drag is unchanged
+  (C_new = C_old sqrt(N_old/N_new)); optionally a nonlinear-sliding variant with the same
+  drag-preserving rescale.
+
+**6.13 HO smoke passed** (driver 181116872, inner 181121303; exit 0, 97 SU, 1h21).
+- Built models/AIS3_proj_ho_relaxfix_init.nc (58 GB) + _baseline.npz. mesh.z in sync;
+  2 outputs, t=2019.1-2019.2.
+- GroundinglineMassFlux is reported as -1589 Gt/yr on the HO mesh (SSA: +1617), i.e. the
+  opposite sign convention in 3D; analysis scripts must not compare its sign across tracks.
+- Launched: ho ctrl (181124031) and ho ssp585_cesm2_ref_ref (181124033), to 2100.
+
+**6.12 collapse run progress.** Chunk 2019-2050 done in ~3 h: yearly sub-solves converge
+normally (0 iteration-cap hits through 2026). From 2044, tens to ~140 masked floating vertices
+are removed per year. Checkpoint AIS3_proj_ssa_ssp585_cesm2_ref_ref_collapse_2050.nc; chunk
+2050-2075 running (181122542).
+
+**6.14 coupled-N test launched (2026-10-13).** New option `AIS3_PROJ_FRICTION=coupledN` in
+projection_ssp_ssa. Off by default; runs get a `_coupledN` suffix.
+- friction.coupling 3 -> 2, i.e. N = max(rho_i g H - rho_w g max(0,-base), 0.07 rho_i g H).
+- C is rescaled once at the experiment start (C_new = C_old sqrt(N_old/N_new)) so the initial
+  drag is unchanged. Checkpoints carry it on; a resumed chunk asserts coupling 2.
+- Runs, 2019-2069: `ctrl_coupledN` (181124133) and `larmip_r4_step_coupledN` (181124134).
+- Checks:
+  - the first output (t=2019.1) speeds should match the standard CTRL's. This verifies the
+    drag-preserving rescale, which assumes ISSM applies the same 0.07 floor under coupling 2;
+  - then the Amundsen response at y50 against 4.3 mm (standard) and LARMIP-2's y50 range.
+
+**6.14 coupled-N result (2026-10-14).** Both runs completed to 2069, exit 0; both resumed at 2050
+with coupling 2 carried over.
+- Rescale at start: grounded N_new/N_old median 2.09 (p5 0.39, p95 10.3); C factor median 0.69.
+- Rescale check: first-output (t=2019.1) speed coupledN/standard CTRL median 1.000 (p5 0.957,
+  p95 1.007); 94.8% of vertices with vel > 10 m/yr are within 5%. So the initial state is
+  preserved.
+- CTRL drift is barely changed: -26.4 vs -25.1 mm SLE over 50 yr.
+
+Amundsen response (exp - ctrl, ISSM VAF, mm SLE):
+
+| | y10 | y20 | y30 | y40 | y50 |
+|---|---|---|---|---|---|
+| standard | 0.68 | 1.60 | 2.60 | 3.51 | 4.30 |
+| coupledN | 0.73 | 1.89 | 3.27 | 4.82 | 6.46 |
+| ratio | 1.09 | 1.18 | 1.26 | 1.37 | 1.50 |
+
+- LARMIP-2 Amundsen at y50: median 18.9 mm (p17 11.2, p83 37.2, range 1.3-63.4). Only 2 of 17
+  models are below 6.5 mm.
+- Reading: coupling N to flotation raises the response, and the gain grows with time, i.e. the
+  feedback builds. But at y50 it closes only ~15% of the gap to the median. Fixed N is a
+  contributor, not the main cause.
+- Next suspect: linear (viscous) sliding, p = q = 1.
+
+**6.14 nonlinear-sliding test launched (2026-10-14).** User: go ahead; submit both LARMIP sets
+(standard + variant) if the variant is ready in time.
+- New option `AIS3_PROJ_FRICTION=coupledN_p3` = coupledN + Budd p=3, q=1, i.e. drag
+  C^2 N^(1/3) u^(1/3).
+- C is rescaled once so the drag is unchanged at the initial speed:
+  C_new = C_old sqrt(N_old u0^(2/3) / N_new^(1/3)), u0 in m/s with a 1 m/yr floor.
+- Jobs:
+  - smoke ctrl, 0.2 yr (181192078), to check that the initial speeds are preserved and that
+    the solve converges;
+  - `ctrl_coupledN_p3` (181192079) and `larmip_r4_step_coupledN_p3` (181192080), to 2069.
+- Plan: if the smoke passes, launch the full 11-run coupledN_p3 LARMIP set straight away rather
+  than waiting for the 50-yr result. ~50k SU; 11 x 200 yr at ~42 h of solve each fits before
+  30 Oct only if started now.
+
+**6.14 p3 smoke passed; full coupledN_p3 LARMIP set launched (2026-10-14).**
+- Smoke 181192078: exit 0; 0 iteration-cap hits; C factor median 1.37.
+- First-output speed vs standard CTRL: median 1.007 (p5 1.000, p95 1.090); 89.5% of vertices
+  within 5%. Slightly looser than coupledN, from the 1 m/yr floor and the nonlinearity; accepted.
+- The 50-yr pair (END=2069) was cancelled after ~10 min and replaced by full-length runs, since
+  their 2019-2050 chunk is identical. Partial execution dirs archived as
+  *_cancelled_end2069_20261014.
+- Launched, all `AIS3_PROJ_FRICTION=coupledN_p3`:
+  - `ctrl_coupledN_p3` to 2219 (181192739);
+  - `larmip_r{1..5}_step_coupledN_p3` and `larmip_r{1..5}_ramp_coupledN_p3` (181192740-49).
+  Logs: logs/proj_ssa_*_coupledN_p3_2019_full.out.
+- The Amundsen y50 comparison will come from these runs' 2050-2075 chunk. If the change does not
+  help, stop the set with models/AIS3_proj_ssa_<exp>.STOP and submit the standard set only.
+
+**6.12 collapse run: NaN at 2059, driver idle 23 h (2026-10-14).**
+- Chunk 2050-2075 (driver 181122542): sub-solves 2050-2058 ran normally; 2058 removed 264
+  vertices + 17 detached.
+- At 2059.0, 368 masked floating vertices + 6 detached were removed, and the sub-solve's inner
+  job (181130482) hit "Solver residue is NaN" on step 1 and exited 1 after 74 s.
+- No lock file, so the driver waited ~23 h (6.10 issue again) until killed by hand. The chunk
+  checkpoints only at 2075, so 2050-2058 was lost.
+- Fix, collapse runs only (the LARMIP/SSP code path is unchanged):
+  - `_solve_watched` submits with waitonlock=0, then polls for the lock file and for the PBS
+    usage footer in the inner outlog. Ended-without-lock means failed.
+  - Stale lock/outlog/errlog/outbin in a reused run dir are renamed *.prev<epoch> before
+    submitting.
+  - On failure the chunk ends at s0: it writes history so far and a checkpoint holding the state
+    the failed solve started from (collapse at s0 applied), then stops the chain (exit non-zero).
+- Failed dir archived as ..._sub2059.0_failed_nan_20261013. Chunk rerun from the 2050 checkpoint:
+  driver 181231013. It should save that state at 2059 for diagnosis.
+
+**6.14 coupledN_p3 progress.** All 11 inner solves running; r4 step outbin at 53% of the
+standard chunk's size after 4h06, i.e. ~15 min per model year (standard 12.6). 200 yr ~50 h +
+queues, so done ~17-18 Oct.
+
+**6.14 coupledN_p3 set status and first results (2026-10-16).**
+- 8 of 11 runs complete to 2219. Three lost chunks to slow nodes, not to convergence (at most
+  1 iteration-cap hit each):
+  - r3 ramp: 2019-2050 killed at its 20 h walltime at 2041.6 (11 steps/h; r3 step did the same
+    chunk in 15 h);
+  - r4 step: 2075-2100 killed at 16 h, at 2097;
+  - r4 ramp: 2100-2125 killed at 16 h, at 2105.4 (3.4 steps/h).
+- Both r4 drivers then sat waiting on lock files (6.10 issue) and were killed by hand. Killed
+  dirs archived as *_killed_walltime_20261016.
+- New `AIS3_PROJ_TIME_FACTOR` (default 3 = unchanged) sets the inner walltime; it is passed down
+  the chain. Relaunched with factor 5:
+  - r3 ramp from 2019 (181381287);
+  - r4 step from 2075 (181381288);
+  - r4 ramp from 2100 (181381289).
+
+Response (exp - ctrl, ISSM VAF, mm SLE), standard -> coupledN_p3:
+
+| sector | y100 | y200 | LARMIP-2 step median y100 / y200 |
+|---|---|---|---|
+| Weddell step | 23.0 -> 38.5 | 58.4 -> (running) | 123 / 313 |
+| Weddell ramp | -- | 40.9 -> 81.8 | -- |
+| EAIS step | 12.1 -> 23.1 | 26.0 -> 56.9 | 78 / 162 |
+| Ross step | 15.3 -> 23.6 | 31.8 -> 58.6 | 76 / 189 |
+| Amundsen step | y50: 4.3 -> 7.0 (coupledN alone 6.5) | -- | -- |
+| Peninsula step | 3.4 -> 5.7 | 4.6 -> 8.4 | 7 / 15 |
+
+- coupledN_p3 roughly doubles the 200-yr response, but it stays at about 1/3 of the LARMIP-2
+  median: low end of the ensemble rather than below it. EAIS and Peninsula are now inside the
+  LARMIP-2 range; Ross (58.6 vs min 89) is still below.
+
+**6.12 watched-solve fix.** The collapse rerun 181231013 "failed" on its first sub-solve
+although that solve ran fine (exit 0, 10/10 steps). ISSM writes the lock file only if
+md.settings.waitonlock > 0 is marshalled, and _solve_watched had set it to 0.
+- Fix: keep waitonlock = budget and call solve(..., batch=True), which returns right after qsub;
+  then poll as before. The false-failure dir is archived as ..._sub2050.0_nolock_20261014.
+- Collapse chunk 2050-2075 resubmitted: 181381388.
+
+**6.12 collapse run, 2026-10-18.**
+- Rerun 181381388 ran 2050 -> 2073. 2059 passed this time with the identical removal (368 + 6
+  vertices) that went NaN on the first try, so that NaN was not reproducible.
+- Yearly removals then grew: 800 (2071), 696 (2072) and 1130 (2073) masked floating vertices
+  plus 17-37 detached. Sub-solves took 6-9 min each with 0 iteration-cap hits.
+- 2073 went NaN at step 5, after 4 normal steps. The watched solve caught it: chunk ended at 2073,
+  history ..._2050-2073_history.npz, checkpoint ..._collapse_2073.nc, chain stopped. Working as
+  designed.
+- Added one automatic retry of a failed collapse sub-solve, if the driver has time left, before
+  ending the chunk.
+- Failed dir archived as ..._sub2073.0_failed_nan_20261017. Resumed from 2073: 181480181.
+
+**2026-10-19 status.** coupledN_p3 LARMIP: 9 of 10 runs + ctrl complete to 2219. r3 ramp's 2100-2125
+solve was walltime-killed again (27 h at time factor 5; reached 2122.3, ~8 steps/h, 0 iteration-cap
+hits; third slow node for this run). The end-year guard stopped the chain with no checkpoint. Run
+directory archived (`..._2100-2125_killed_walltime_20261019`); resubmitted from 2100 with
+AIS3_PROJ_TIME_FACTOR=7 (37 h per 25-yr chunk). HO projections complete to 2100 (both). The collapse
+resume from 2073 (181480181) failed on `checkpoint final_time 2074.0 != 2073.0`: the
+failure-path checkpoint stores the failed sub-solve's end time rather than its start (s0); not fixed
+here.
+
+### 6.15 Status 2026-10-19
+
+**HO projections complete to 2100** (ctrl, ssp585_cesm2_ref_ref; 8 chunks each, from the
+relaxed-start 2019 state). Sea level from 2019, ISSM VAF, mm SLE (negative = sea-level fall):
+
+| year | HO ctrl | HO ssp585 | HO ssp585-ctrl | SSA ssp585-ctrl |
+|---|---|---|---|---|
+| 2050 | -23.1 | -34.6 | -11.4 | -11.5 |
+| 2070 | -38.2 | -66.4 | -28.1 | -28.6 |
+| 2100 | -60.9 | -132.1 | -71.2 | -75.1 |
+
+- The forced response (ssp585 - ctrl) of HO and SSA agrees within 5% at every year: SMB-dominated
+  mass gain, as in 6.11.
+- HO's control drifts faster: -61 vs -39 mm by 2100.
+
+**Collapse run.** Resume 181480181 died at start-up: "checkpoint final_time 2074.0 != 2073.0".
+- Cause: the failure path saved the checkpoint with the failed sub-solve's timestepping
+  (2073 -> 2074) instead of t1 = 2073. Fixed: the failure path now sets start/final time = t1.
+- The 2073 checkpoint was corrected in place (timestepping final_time attr -> 2073.0). The original
+  is kept as ..._collapse_2073.nc.orig_finaltime2074.
+- Resumed: 181547044.
+
+**coupledN_p3 LARMIP.** 10 of 11 complete to 2219. r3 ramp: 2100-2125 walltime-killed again at
+2122 (factor 5 = 26 h; gadi-cpu-clx-0004). The user resubmitted it with AIS3_PROJ_TIME_FACTOR=7
+(181546272, logs ..._2100-rerun2.out).
+
+**6.15 collapse run, 2026-10-20.**
+- Resume 181547044 ran 2073 -> 2089. Removals kept growing: 1552 (2087), 1827 (2088) and 1898
+  (2089) masked floating vertices + 40-214 detached per year. Checkpoint at 2075.
+- The 2089 sub-solve failed on both the first try and the automatic retry (deterministic): step 1
+  linear solve residue 1.87e-3 > solver_residue_threshold 1e-3, and the recovery solver failed
+  too. Not a NaN.
+- The chunk ended correctly: checkpoint ..._collapse_2089.nc, with start = final = 2089 (time
+  stamp fix verified).
+- `check_collapse_pieces.py` (2075 vs 2089 checkpoints): no weakly anchored floating pieces;
+  unanchored fragments 16-18 elements, loose vertices 91-100 and sliver elements 835-917 are
+  similar in both. So no structural cause was found; the system is just ill-conditioned after
+  large removals.
+- Collapse runs now use solver_residue_threshold 1e-2 (`AIS3_PROJ_RESIDUE` override, passed down
+  the chain). Failed dir archived as ..._sub2089.0_failed_residue_20261020. Resumed: 181685092.
+
+**coupledN_p3 r3 ramp:** 2100-2125 (inner 181546757, factor 7) at ~85% of the expected outbin
+after 26 h, i.e. slow but inside its 37 h limit. This run is consistently ~3x slower than the
+other sectors on every chunk, so it is the run itself, not one bad node. 4 chunks remain after
+this one; at ~30 h each it finishes ~25-26 Oct.
+
+### 6.15 LARMIP analysis: both sets vs LARMIP-2, and linear-response test (2026-10-20)
+
+`config/analyse_larmip.py`; LARMIP-2 8 m/yr files (17 models) now kept in `assets/larmip2/`;
+coupledN_p3 series exported to `docs/larmip/AIS3_ssa_larmip_sle_coupledN_p3.csv` (r3 ramp only to
+year 81, still running). Figures: `docs/figures/larmip_vs_larmip2.png`, `larmip_lrt_test.png`.
+Region mapping assumed as in 6.14. Responses: experiment minus control, ISMIP-convention VAF, mm.
+
+| sector, step | y100 std / p3 | y100 L2 median [p5-p95] | y200 std / p3 | y200 L2 median [p5-p95] | p3 rank of 18 at y200 |
+|---|---|---|---|---|---|
+| Weddell | 18.7 / 34.8 | 121 [61-302] | 51.5 / **132.4** | 313 [161-628] | 2 |
+| East Antarctica | 9.7 / 20.9 | 77 [25-247] | 23.1 / **54.3** | 161 [49-443] | 3 |
+| Ross | 12.2 / 20.9 | 75 [42-144] | 27.5 / **54.7** | 189 [96-349] | 1 |
+| Amundsen | 6.1 / 13.4 | 42 [13-106] | 11.9 / **29.4** | 76 [23-201] | 3 |
+| Peninsula | 2.4 / 4.7 | 7 [0.2-39] | 3.5 / **7.3** | 15 [4.3-63] | 4 |
+
+- coupledN_p3 raises the 200-yr response 2.1-2.6x (sum of sectors 117 -> 278 mm; LARMIP-2 median of
+  per-model sums 815 mm). It is inside the LARMIP-2 5-95% range for East Antarctica, Amundsen and
+  Peninsula, still below it for Weddell (132 vs p5 161) and Ross (55 vs p5 96). Low end of the
+  ensemble, not an outlier any more except Ross.
+- Both sets accelerate through 200 yr like the LARMIP-2 median; no saturation.
+- Control drift differs: standard -89 mm, coupledN_p3 -56 mm over 200 yr (both subtracted).
+- **Linear response holds.** Simulated ramp vs LRT prediction from the step run: ratios 0.96-1.13,
+  mostly 1.00-1.07 (standard and coupledN_p3 alike), e.g. Weddell p3 y200 77.0 vs 78.8, East
+  Antarctica p3 38.6 vs 37.3, Amundsen p3 22.9 vs 21.7. The ramps run slightly ahead of the linear
+  prediction (weak superlinearity), most in Ross/Amundsen standard (1.07-1.12 at y100).
+
+### 6.16 Ross ramp (coupledN_p3) slowdown: shorter chunks (2026-10-20)
+- `larmip_r3_ramp_coupledN_p3` 2100-2125 (inner 181546757, factor 7 = 36.75 h): the step rate fell
+  to ~3.7 steps/h (~2.7 h per model year) as the ramp reached full strength (2119). Step 239/250 at
+  31.7 h, so this chunk should just finish. The next 25-yr chunk would need ~68 h, more than the
+  48 h maximum.
+- Added `AIS3_PROJ_CHUNK_YEARS` to `projection_ssp_ssa`: it caps each chunk at N years past the
+  latest checkpoint (checkpoint names stay integer years), and it is passed on when chaining.
+- Created `models/AIS3_proj_ssa_larmip_r3_ramp_coupledN_p3.STOP`, so the driver saves the 2125
+  checkpoint without auto-chaining.
+- Resubmit: PBS job 181722448 (`config/resub_larmip_r3_ramp_p3.pbs`, `depend=afterany:181546272`).
+  A first watcher, run as a shell background task, died with the Claude session, so this is a PBS job
+  instead. If the 2125 checkpoint exists, it moves the STOP file to `.STOP.released_<date>` and
+  resubmits with `AIS3_PROJ_CHUNK_YEARS=8, AIS3_PROJ_TIME_FACTOR=22`. That gives a 37 h inner
+  limit, against ~27 h at 3 steps/h (rate at 21:44 was 3.3 h per model year). If the checkpoint is
+  missing, it does nothing.
+- Remaining: 2125 -> 2219, 12 chunks of ~1.1 days each plus queue waits (~2 weeks). The
+  coupledN_p3 Ross ramp column in `docs/larmip/AIS3_ssa_larmip_sle_coupledN_p3.csv` stops at year
+  81 until then. If the rate falls below ~2.5 steps/h, drop to `CHUNK_YEARS=5`.
+- Update 2026-10-21 14:40: the resubmit job ran at 00:38. The 8-yr chunks run at full step count
+  (80 x 0.1 yr) and are now much faster: inner solve 2125-2133 took 4 h 58 min (linear solver
+  16546 s), 2166-2174 took 42 min (linear solver 2161 s). The earlier ~3 steps/h is not
+  reproduced, so it is probably node- or iteration-count-related. VAF changes per chunk are smooth
+  (+0.29 -> +0.73 mm per 8 yr). Checkpoints up to 2175; 2175-2183 running. The extra 1-yr chunks
+  (2149-2150, 2174-2175) come from the 25-yr CHUNK_EDGES still applying with CHUNK_YEARS; harmless.
+  Expected completion ~2026-10-22, well before the 30 Oct LARMIP deadline.
+
+**6.15 collapse run, 2026-10-21.** The 2089 resume (181685092, residue threshold 1e-2) failed
+on both tries, now with "Solver residue is NaN" on step 1 instead of the residue rejection. So
+the 2089 starting state breaks the first SSA stress balance. Nothing was lost: "first sub-solve
+failed", and the 2089 checkpoint is unchanged.
+- Test job 181804306 (`check_collapse_2089_sb.py`): stress-balance-only solves on the 2089 state:
+  - V1 as saved;
+  - V2 Picard start velocity zeroed;
+  - V3 every unanchored piece and loose ice vertex removed;
+  - V4 V2 + V3.
+- r3 ramp coupledN_p3 at 2175. The user added `AIS3_PROJ_CHUNK_YEARS` (8-yr chunks, 6.16).
+
+**6.15 2089 cause found (2026-10-21).**
+- `check_collapse_2089_sb.py`: stress-balance-only solves on the 2089 state.
+  - V1 (as saved) and V2 (zero Picard start) end without error but with max speed 1.2e15 and
+    1.7e14 m/yr: rigid-body modes.
+  - V3/V4: removing all 113 unanchored ice vertices (pieces with no anchor element, plus ice
+    vertices in no fully-ice element) gives max 10 km/yr, median 81.5 m/yr (unchanged).
+- So the transient failures (residue 1.9e-3, NaN) came from unanchored pieces that the collapse
+  step left in place. They were outside the mask and not touching that year's cut, presumably
+  formed by grounding-line migration between years. At the 2089 resume nothing was cut, so no
+  clean-up ran at all.
+- Fix: apply_collapse now removes every unanchored piece each year, whether or not anything is
+  cut. In collapse runs this also removes the ~150 init-detached vertices at the first collapse
+  year (negligible mass).
+- (`check_collapse_2089_tr.py`, the 1-step transient variant test, failed at marshalling: tf
+  loaded as a list. Not needed after V3.)
+- Resumed from 2089 with the fix (see qstat). Failed dir archived as
+  ..._2089-2100_sub2089.0_failed_nan_20261021.
+
+### 6.17 Melt at the grounding line: LARMIP sensitivity test (2026-10-21)
+
+User approved testing melt on partially floating elements, the remaining suspect after
+coupledN/p3 (6.14).
+- ISSM's Element::Ismip6FloatingiceMeltingRate returns early unless the element is all
+  floating (checked in the ISSM source). So with the ismip6 class, melt_interpolation alone
+  cannot put melt into grounding-line elements.
+- New test options in projection_ssp_ssa:
+  - `AIS3_PROJ_STATICMELT=1` replaces ismip6 by the default class with a fixed floating melt
+    field: CTRL's first output (t=2019.1), extended by nearest neighbour across the grounding
+    line, + the LARMIP step anomaly;
+  - `AIS3_PROJ_MELTINTERP` sets groundingline.melt_interpolation.
+  - One 2019-2050 chunk from the initial state only; set_static_forcing now skips tf for
+    non-ismip6 classes.
+- Standard friction. Pairs (exp names):
+  - A `ctrl_staticmelt_nmp` / `larmip_r4_step_staticmelt_nmp` (181844493/95);
+  - B `ctrl_staticmelt_sem1` / `larmip_r4_step_staticmelt_sem1` (181844497/98);
+  - smoke 181844491.
+- Compare Amundsen exp-ctrl at y30: B/A gives the effect of melting the floating part of GL
+  elements. A vs the standard run (2.60 mm at y30) checks the fixed-melt approximation.
+- First submission (181844491-98) failed at once: the sub-solve set-up read md.basalforcings.tf,
+  which the default class lacks. Fixed (tf windowing skipped when there is no tf). Logs archived
+  *_tfbug. Resubmitted: smoke 181845516; A 181845517/18; B 181845519/20.
+
+**6.15 collapse 2089 fix confirmed (2026-10-21).**
+- Resume 181817133 (remove-all-unanchored fix): 2089 sub-solve ran 10/10 steps, exit 0, no
+  iteration-cap hits. It had failed 4x before.
+- 2090 sub-solve (181822217) wrote its first output at 15:59, then nothing for 2.5 h (normal ~7
+  min per year), so it was killed by hand. The driver detected the end and queued its automatic
+  retry (181854438).
+- The re-staged run dir lost the killed job's outlog (pyissm cleans the dir on staging), so the
+  cause of the stall is unknown.
+- Melt test (6.17): smoke 181845516 exit 0; the four 2019-2050 runs are solving.
+- coupledN_p3 r3 ramp at 2216.
+- Update 2026-10-21 18:40: checkpoints to 2216 (2208-2216 +1.05 mm). Final chunk 2216-2219 running
+  (driver 181853335, inner 181853797). Queued `config/launch_larmip_p3_final.pbs` (181855251,
+  afterok:181853335, 64 GB because the last export used all 32 GB). It needs the 2219 checkpoint.
+  It archives the partial CSV and the two LARMIP figures as `*.partial_r3ramp_y81_20261021.*`, then
+  reruns `export_larmip.py --ramp --variant coupledN_p3` and `analyse_larmip.py`.
+- Update 2026-10-23: 2219 checkpoint written 2026-10-21 18:45. `launch_larmip_p3_final.pbs` ran (exit 0,
+  40 GB): coupledN_p3 CSV now complete for all 10 experiments; analysis rerun. Ross p3 ramp vs LRT
+  1.09 / 1.08 / 1.05 at y100 / 150 / 200; overall LRT ratios unchanged at 0.96-1.13. Model description
+  corrected: p3/standard step ratio at y200 is 1.99-2.57 (Ross 1.99), so "2.0-2.6", not "2.1-2.6".
+
+### 6.17 LARMIP-3 submitted (2026-10-23)
+- Sent to anders.levermann@pik-potsdam.de. Attachments: main set `AIS3_ssa_larmip_sle_coupledN_p3.csv`,
+  sensitivity set `AIS3_ssa_larmip_sle.csv`, `model_description.tex/.md`, `larmip_refs.bib`
+  (TODOs filled: ehrenfeucht2025, vandalum2025, zhou2024, plus reese2026 for the ISMIP7 protocol),
+  `authors.md`, `README.txt`. Model name: ACCESS-AIS3.
+- Open questions put to Anders: sector numbering (1 Weddell, 2 EAIS, 3 Ross, 4 Amundsen,
+  5 Peninsula), and whether the forced area should follow the grounding line (ours does) or stay at
+  the initial shelf extent.
+
+### 6.18 Melt-at-the-grounding-line test: results (2026-10-23)
+
+Test design in the first 6.17 section ("Melt at the grounding line"). All 4 runs 2019-2050
+completed, exit 0. Amundsen 8 m/yr step, exp - ctrl, ISSM VAF, mm SLE:
+
+| run | y10 | y20 | y30 | grounded area lost by 2049 |
+|---|---|---|---|---|
+| standard (ismip6, no melt on partly floating el.) | 0.68 | 1.60 | 2.60 | 7,053 km² |
+| A: static melt, no melt on partly floating el. | 0.67 | 1.60 | 2.62 | 7,555 km² |
+| B: static melt, SubelementMelt1 | 0.94 | 2.14 | 3.50 | 14,401 km² |
+| coupledN (6.14) | 0.73 | 1.89 | 3.27 | -- |
+| coupledN_p3 (6.14) | 0.83 | 2.16 | 3.74 | -- |
+| LARMIP-2 median (y10 / y30) | 1.1 | -- | 9.4 | -- |
+
+- A reproduces the standard run, so the fixed-melt approximation is valid and B/A isolates the
+  melt-interpolation effect.
+- Melting the floating part of grounding-line elements raises the response x1.34-1.39 (steady
+  over y10-y30, unlike the friction feedback, which grows) and doubles the grounded area lost.
+- Size: comparable to coupledN_p3 (x1.44 at y30). If the two multiply, ~x1.9, i.e. ~5 mm at y30,
+  still ~half the LARMIP-2 median (9.4 mm).
+- Accounted for so far: fixed N, linear sliding and no melt on partly floating elements, together
+  roughly x2 of the ~x3.6 gap at y30. The rest is not diagnosed; candidates are high inverted
+  basal drag near the GL (inversion compensating), resolution, and the SSA approximation.
+- The production runs cannot use this as is: the ismip6 class sets melt only on fully floating
+  elements (Element::Ismip6FloatingiceMeltingRate). Using SEM1 with ismip6 melt needs either an
+  ISSM source change (drop the IsAllFloating test in that routine, then rebuild) or a fixed melt
+  field as in this test.
+- LARMIP-3 was already submitted with coupledN_p3 (second 6.17 section). If Anders' answer on the
+  forced area requires reruns, SEM1 could be folded in then.
+
+**6.12 collapse run, 2026-10-23.**
+- Chunks 2089-2100, 2100-2125 and 2125-2150 complete; the automatic retry rescued 2090 and 2147.
+  Chunk 2150-2175 running (driver 182042838), at 2162.
+- Removals reach ~3,650 masked floating vertices per year by 2149.
+- Sub-solve cost is now very uneven:
+  - 7-30 min in easy years;
+  - 1-3.7 h when 5-9 of the 10 steps hit the 100-iteration cap (2148: 3h42 of its 4 h limit;
+    2152, 2157, 2158: 2.3-2.7 h).
+- The collapse inner walltime floor is raised 240 -> 480 min (`AIS3_PROJ_COLLAPSE_INNER_MIN`,
+  passed down the chain); the driver's per-sub-solve time need follows it. Applies from the next
+  chunk (2175).
+- Still on for collapse runs: solver_residue_threshold 1e-2 (6.15).
+
+**6.12 collapse run, 2026-10-24.**
+- Chunks 2150-2175 and 2175-2200 complete with no failures. Chunk 2200-2225 running (driver
+  182168491), at 2205; sub-solves are fast again (5-24 min, 0 iteration-cap hits in 2200-2204).
+- Collapse effect, ISSM VAF, mm SLE (+ = rise), CESM2-WACCM ssp585 ref:
+
+| year | ref - ctrl | collapse - ctrl | collapse - ref | floating area ref / collapse (10^3 km²) |
+|---|---|---|---|---|
+| 2050 | -11.5 | -11.5 | +0.0 | 1403 / 1395 |
+| 2100 | -75.1 | -64.4 | +10.7 | 1417 / 1264 |
+| 2150 | -148.1 | -98.3 | +49.8 | 1506 / 1085 |
+| 2175 | -160.2 | -81.1 | +79.1 | 1566 / 961 |
+| 2200 | -152.0 | -27.6 | +124.5 | 1626 / 817 |
+
+- Collapse adds +11 mm by 2100 and +125 mm by 2200. By 2200 it has removed half the floating
+  area (817 vs 1626 thousand km²) and nearly cancels the SMB-driven sea-level fall.
+
+**6.12 collapse run complete to 2300 (2026-10-27).** `ssp585_cesm2_ref_ref_collapse` finished
+("complete through 2300"). The last chunk needed one automatic retry (2285). No time gaps
+> 1 yr in the history.
+
+| year | ref - ctrl | collapse - ctrl | collapse - ref | floating area ref / collapse (10^3 km²) |
+|---|---|---|---|---|
+| 2100 | -75.1 | -64.4 | +10.7 | 1417 / 1264 |
+| 2150 | -148.1 | -98.3 | +49.8 | 1506 / 1085 |
+| 2200 | -152.0 | -27.6 | +124.5 | 1626 / 817 |
+| 2250 | -21.3 | +200.4 | +221.7 | 1747 / 438 |
+| 2300 | +211.8 | +521.7 | +309.8 | 1863 / 412 |
+
+- Units: ISSM VAF, mm SLE (+ = rise); a final ISMIP-convention export is still to do.
+- Collapse adds +11 mm by 2100, +125 mm by 2200 and +310 mm by 2300. By 2300 the collapse run
+  has 412 vs 1863 thousand km² of floating ice.
+- Total ssp585 + collapse: +522 mm vs CTRL by 2300 (no collapse: +212).
+
+**6.12 collapse: final export and figures (2026-10-27).**
+- Collapse history outputs: 559 time points = one per integer year + one at Y.1 per 1-yr
+  sub-solve (each sub-solve also saves its first step). No duplicates; every export uses
+  integer years only.
+- `plot_projections.py --proj` rerun (182327674; the 2026-10-09 CSV, figure and log are kept as
+  *_20261009). ISMIP-convention VAF, collapse - ref: +11.0 (2100), +126.8 (2200), +314.6 mm
+  (2300). Totals vs CTRL by 2300: collapse +526, no collapse +211.
+- New `config/plot_collapse_and_ho.py` -> docs/figures/projections_collapse.png and
+  projections_ho_vs_ssa.png.
+- HO ssp585 - ctrl (ISMIP VAF, own 2019 state): -11.3 (2050), -69.5 (2100); SSA -11.3, -73.0.
+  Control drift by 2100: HO -65, SSA -41.
+- **Ross Ice Shelf removed in one year, 2214, mostly by the unanchored-piece rule.**
+  - 2357 masked + 9911 unanchored vertices, ~209k km² of floating ice; other years remove 9-65
+    unanchored vertices.
+  - So that year's mask band evidently separated the rest of the Ross shelf from grounded ice
+    (no edge connection to an anchoring element), and the remnant was removed as an iceberg.
+  - Physically defensible: a detached shelf drifts away, and it cannot stay in the solve (rigid
+    body). But it is a choice of ours, not the mask's, and it should be stated wherever the
+    collapse results are used.
+  - Not yet verified from the 2213 geometry (no ice_levelset in the history files).
