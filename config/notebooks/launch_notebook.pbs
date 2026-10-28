@@ -1,0 +1,25 @@
+#!/bin/bash
+# Execute one generated step notebook as a batch job. Submit from config/notebooks/ with the
+# step's resources and the notebook path (both are in the notebook's header), e.g.
+#   qsub -q hugemem -l ncpus=48,mem=1450GB,walltime=45:00:00 -v NB=ais_0.1/15_ho_relaxation.ipynb launch_notebook.pbs
+# Step options go in the same -v list (e.g. NB=...,AIS3_HIST_TAG=_relaxfix).
+# The executed copy goes to <notebook dir>/executed/<name>.<jobid>.ipynb, so nothing is overwritten.
+# PYISSM_ENV overrides the Python environment (must provide jupyter and the 'pyissm' kernel).
+#PBS -N ais3_nb
+#PBS -P au88
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+: "${NB:?pass the notebook with qsub -v NB=<dir>/<name>.ipynb}"
+PYISSM_ENV=${PYISSM_ENV:-/scratch/au88/jh7060/mamba/envs/pyissm}
+outdir="$(dirname "$NB")/executed"
+mkdir -p "$outdir"
+out="$(basename "$NB" .ipynb).${PBS_JOBID%%.*}.ipynb"
+echo "NB=$NB -> $outdir/$out"
+"$PYISSM_ENV/bin/jupyter" nbconvert --to notebook --execute \
+    --ExecutePreprocessor.kernel_name=pyissm \
+    --ExecutePreprocessor.timeout=-1 \
+    --output-dir "$outdir" --output "$out" \
+    "$NB"
