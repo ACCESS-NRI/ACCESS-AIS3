@@ -8,6 +8,9 @@ their preamble (imports, helpers, settings, data catalog) followed by one step's
 options are taken from the code; resources come from the step's existing PBS launcher. Edit a
 driver, then rerun this script. Never edit the generated notebooks by hand.
 
+Hand-written notes per step (what it does, prerequisites, what to check, pitfalls) live in
+notebooks/notes/<step>.md and are inserted after the header.
+
 Output: notebooks/<driver>/<NN>_<step>.ipynb. Run one with notebooks/launch_notebook.pbs (the
 command is in each notebook's header) or open it in a Jupyter session with enough memory for
 the step's outer driver.
@@ -24,6 +27,12 @@ from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 
 CONFIG = Path(__file__).resolve().parent
 OUT = CONFIG / 'notebooks'
+NOTES = OUT / 'notes'
+# Production steps must have a hand-written notes file; the other (upstream inversion) steps may.
+NOTES_EXPECTED = {'ho_thermal_steadystate', 'ho_friction_inv', 'melt_gamma_tuning', 'ho_relaxation',
+                  'historical_dhdt_tuning', 'projection_ssp', 'ssa_inverted_solve_budd',
+                  'ssa_relaxation_budd', 'melt_gamma_tuning_ssa', 'historical_dhdt_tuning_ssa',
+                  'projection_ssp_ssa'}
 
 # One line per step (what it is for). Everything else in the header is read from the code.
 PURPOSE = {
@@ -129,10 +138,22 @@ def preamble_cells(lines, tree, end_line):
     """Split the preamble at `## ---- / ## Title / ## ----` headers, between top-level statements."""
     stmts = [n for n in tree.body if n.end_lineno <= end_line]
     starts = [1]
-    titles = {1: None}
+    titles = {1: 'Imports'}
+    prev_def = False
     for n in stmts:
         s = leading_comment_start(lines, n.lineno)
         block = lines[s - 1:n.lineno - 1]
+        if isinstance(n, ast.FunctionDef):  # one cell per helper function
+            if s not in titles:
+                doc = (ast.get_docstring(n) or '').strip().split('\n')[0].rstrip('.')
+                starts.append(s)
+                titles[s] = f'`{n.name}()`' + (f' — {doc}' if doc else '')
+            prev_def = True
+            continue
+        if prev_def and s not in titles:  # first statement after the helper functions
+            starts.append(s)
+            titles[s] = 'Settings'
+        prev_def = False
         for j, raw in enumerate(block):
             if HEADER_RULE.match(raw.strip()) and j + 1 < len(block) and block[j + 1].startswith('## ') \
                     and not HEADER_RULE.match(block[j + 1].strip()):
@@ -161,7 +182,25 @@ def progress_print(node):
     a = node.value.args[0]
     if isinstance(a, ast.JoinedStr) and a.values and isinstance(a.values[0], ast.Constant):
         a = a.values[0]
-    return isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value.lstrip().startswith('--')
+    return (isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value.lstrip().startswith('--')
+            and not set(a.value.strip()) <= set('-'))
+
+
+def progress_text(chunk):
+    """Heading text from the first progress print in a cell, e.g. 'Loading melt-calibrated model'."""
+    for n in ast.parse(chunk).body:
+        if progress_print(n):
+            a = n.value.args[0]
+            if isinstance(a, ast.JoinedStr):
+                text = ''.join(v.value if isinstance(v, ast.Constant)
+                               else '{' + ast.unparse(v.value) + '}' for v in a.values)
+            else:
+                text = a.value
+            text = text.strip().lstrip('-').strip().split(':')[0]
+            text = text.rstrip('.').rstrip('\u2026').strip()
+            text = re.sub(r'(\S*\{[^}]*\}\S*)', r'`\1`', text)  # placeholders as code
+            return text[:1].upper() + text[1:] if text else None
+    return None
 
 
 def _dump(nodes):
@@ -331,6 +370,12 @@ def build(driver):
             driver, step, PURPOSE[step], banner,
             segment_strings(src, node, {'load_model'}), segment_strings(src, node, {'save_model'}),
             opts, pbs_resources(launcher), launcher, nb_rel, dedented))]
+        note_file = NOTES / f'{step}.md'
+        if note_file.exists():
+            cells.append(new_markdown_cell(note_file.read_text().strip() + f'\n\n_Hand-written notes: '
+                                           f'`config/notebooks/notes/{step}.md` (edit there, then regenerate)._'))
+        elif step in NOTES_EXPECTED:
+            sys.exit(f'missing notes file {note_file}')
         opt_lines = ['import os', '',
                      '# Uncomment to set an option for an interactive run. Values passed with',
                      '# `qsub -v` already arrive in the environment. Defaults shown are the code\'s own.']
@@ -346,8 +391,13 @@ def build(driver):
                                    f"default and AIS3_STEPS"))
         note = comments_to_markdown(gap)
         if note:
-            cells.append(new_markdown_cell(f'**From the driver:**\n\n{note}'))
-        cells += body_cells
+            cells.append(new_markdown_cell(f'**Section comment from the driver** (kept as written; it '
+                                           f'records history and may be out of date):\n\n{note}'))
+        for j, c in enumerate(body_cells):
+            heading = progress_text(c.source) if (dedented and j) else None
+            if heading:
+                cells.append(new_markdown_cell(f'#### {heading}'))
+            cells.append(c)
         nb = new_notebook(cells=cells, metadata={
             'kernelspec': {'name': 'pyissm', 'display_name': 'pyissm', 'language': 'python'},
             'language_info': {'name': 'python'},
