@@ -27,7 +27,7 @@ to each result.
 
 Subdomain extraction can introduce new boundaries and therefore change the boundary
 conditions relative to the full-continent solve. This is especially relevant around the
-floating calving front and grounding line. The root [boundary-condition notes](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/RUN_GUIDE.md)
+floating calving front and grounding line. The root [boundary-condition notes](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/BOUNDARY_CONDITIONS.md)
 and [inversion worklog](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/inversion_worklog.md) explain the current choices and evidence.
 
 Likewise, friction law, effective-pressure source, mesh/geometry treatment, cost-function

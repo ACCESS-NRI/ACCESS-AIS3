@@ -50,7 +50,7 @@ that phase of work, not a currently-accurate production status):**
   discrepancy; it's `ssa_inverted_solve`'s own fresh full-continental forward solve
   (proper ice-sheet/ocean BCs) vs. the subdomain inversion's own velocity (carrying
   whatever BC artifacts the extraction's cut edges introduce, same effect this project's
-  `RUN_GUIDE.md` already documents) — same friction field, genuinely different velocity
+  `BOUNDARY_CONDITIONS.md` already documents) — same friction field, genuinely different velocity
   solve. **Bottom line: production's Schoof state is, in practice, already converged;
   further optimisation from here would not move the result.** The Siple Coast
   finding (§5.4, previous bullet) is unaffected by this — that's about fit quality in a

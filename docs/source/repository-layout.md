@@ -12,11 +12,14 @@ packages or modules.
 | `config/ais_0.1_param.py` | Model masks, geometry, velocity, rheology, friction, and other fields. | [Parameterization](architecture.md#from-inputs-to-model-state) |
 | `config/launch_*.pbs` | PBS launchers for drivers and standalone scripts. | [Running on Gadi](gadi.md) |
 | `config/*.py` | Stage-specific analysis, finalization, plotting, and validation scripts. | [Workflow map](workflows.md) |
-| `config/*.ipynb` | Development and investigation notebooks; some overlap with exported scripts. | Check the current driver before treating a notebook as canonical. |
+| `config/notebooks/` | One generated, runnable notebook per driver step (`ais_0.1/`, `ais_0.1_SSA/`), the `launch_notebook.pbs` launcher, and hand-written step notes in `notes/`. | [Step notebooks](workflows.md#step-notebooks) |
+| `config/make_step_notebooks.py` | Regenerates `config/notebooks/` from the drivers and `notes/`. | [Contributing](contributing.md#change-a-workflow) |
+| `config/*.ipynb` | Older hand-ported development notebooks (`ais_0.1_*.ipynb`, August 2026). Out of date. | Use `config/notebooks/` instead. |
 | `assets/` | Domain outlines and constraint `.exp` inputs. | [Architecture](architecture.md) |
 | `models/` | Saved model states, restart checkpoints, and selected products. | [Workflow outputs](workflows.md) |
 | `execution/`, `execution_SSA/`, `execution_*` | ISSM run directories, solver inputs/outputs, and experiment artifacts. | [Runtime and outputs](architecture.md#runtime-and-output-boundaries) |
 | `docs/` | Human-authored run guides, worklogs, figures, and Sphinx source under `docs/source/`. | [Development record](development-record.md) |
+| `BOUNDARY_CONDITIONS.md` | Boundary-condition choices for the full-continent model and the extracted inversion subdomains. | [Validation](validation.md#boundary-conditions-and-inversion-choices) |
 | `README.md`, `LICENSE`, `COPYRIGHT.txt` | Project overview and legal notices. | Project root |
 
 ## Finding the canonical implementation
@@ -26,9 +29,11 @@ a similarly named notebook, old launcher output, or experiment directory. The dr
 stage block identifies the model input, settings, save path, and launch pattern. Then
 follow the matching launcher and the parameterization code as needed.
 
-Notebooks and worklogs remain valuable evidence for why choices were made. They are not
-automatically interchangeable with the current driver: some are historical snapshots,
-and development notes can describe superseded runs.
+The step notebooks in `config/notebooks/` are generated from the drivers, so they match
+the driver at the time they were last regenerated. If a driver has changed since, the
+driver is correct. The older notebooks in `config/` and the worklogs remain valuable
+evidence for why choices were made, but they are not interchangeable with the current
+driver: some are historical snapshots, and development notes can describe superseded runs.
 
 ## Generated files and large data
 
