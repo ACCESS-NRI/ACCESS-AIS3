@@ -16,6 +16,12 @@ When adding or changing a stage:
 4. Record scientific rationale and experimental evidence in the relevant worklog; keep
    old results clearly marked as superseded where needed.
 5. Check that examples match the actual launcher, environment variables, and filenames.
+6. Regenerate the step notebooks from `config/`:
+   `<pyissm-env>/bin/python make_step_notebooks.py`. Never edit the generated notebooks by
+   hand; to change a step's hand-written notes, edit `config/notebooks/notes/<step>.md` and
+   regenerate. A new step needs a one-line entry in `PURPOSE` in `make_step_notebooks.py`,
+   and a production step (listed in `NOTES_EXPECTED`) also needs a notes file. The
+   generator stops with an error if either is missing.
 
 Do not use autodocumentation that imports the drivers: their module-level setup is
 environment-specific and can access data, alter process state, or initiate workflow

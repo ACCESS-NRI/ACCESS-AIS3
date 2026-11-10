@@ -7,7 +7,7 @@ reads and writes, what resources it needs, and the known failures. It is distill
 (§) refer to those logs, which have the full evidence.
 
 Status is as of **2026-09-29**. The boundary-condition notes are in the root
-[`RUN_GUIDE.md`](../RUN_GUIDE.md).
+[`BOUNDARY_CONDITIONS.md`](../BOUNDARY_CONDITIONS.md).
 
 ---
 

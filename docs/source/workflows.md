@@ -50,6 +50,27 @@ See the [projection experiment record](https://github.com/ACCESS-NRI/ACCESS-AIS3
 experiment naming, output products, and operational choices. For SSA historical validation
 caveats, see [validation](validation.md).
 
+## Step notebooks
+
+Every stage above also exists as a runnable notebook under `config/notebooks/`, one per
+step and numbered in pipeline order:
+
+| Directory | Driver | Notebooks |
+|---|---|---|
+| `config/notebooks/ais_0.1/` | `config/ais_0.1.py` | `00_process_domain` to `11_ssa_relaxation` (shared preparation and SSA inversion), then `12_ho_thermal_steadystate` to `17_projection_ssp` (HO track) |
+| `config/notebooks/ais_0.1_SSA/` | `config/ais_0.1_SSA.py` | `00_ssa_inverted_solve_budd` to `04_projection_ssp_ssa` (pure-SSA track) |
+
+Each notebook contains the driver's setup code followed by that one step's code, split into
+cells. Its header lists the files the step reads and writes, its `AIS3_*` options and their
+defaults, and the `qsub` command with the step's resources. The production steps also
+include hand-written notes on what the step does, its prerequisites, what to check, and
+known pitfalls.
+
+The notebooks are **generated** from the drivers by `config/make_step_notebooks.py`; the
+drivers remain the source of truth. See [running a step notebook](gadi.md#run-a-step-as-a-notebook)
+for how to submit one, and [contributing](contributing.md#change-a-workflow) for how to
+regenerate them.
+
 ## Data-flow rule of thumb
 
 Each stage should be documented in terms of four things:
