@@ -150,3 +150,6 @@ docs/slides/**/*.nav
 docs/slides/**/*.out
 docs/slides/**/*.snm
 docs/slides/**/*.toc
+
+# LARMIP-3 sector masks: provided to participants, kept out of the repo
+/assets/larmip3/

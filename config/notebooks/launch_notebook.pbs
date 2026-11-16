@@ -1,7 +1,7 @@
 #!/bin/bash
 # Execute one generated step notebook as a batch job. Submit from config/notebooks/ with the
 # step's resources and the notebook path (both are in the notebook's header), e.g.
-#   qsub -q hugemem -l ncpus=48,mem=1450GB,walltime=45:00:00 -v NB=ais_0.1/15_ho_relaxation.ipynb launch_notebook.pbs
+#   qsub -q hugemem -l ncpus=48,mem=1450GB,walltime=45:00:00 -v NB=ais_0.1/16_ho_relaxation.ipynb launch_notebook.pbs
 # Step options go in the same -v list (e.g. NB=...,AIS3_HIST_TAG=_relaxfix).
 # The executed copy goes to <notebook dir>/executed/<name>.<jobid>.ipynb, so nothing is overwritten.
 # PYISSM_ENV overrides the Python environment (must provide jupyter and the 'pyissm' kernel).

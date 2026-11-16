@@ -22,6 +22,15 @@ inversion plus a friction inversion, grounded B from temperature).
 | Budd p=q=1, unregularised | 61.4 | — | beats p=q=3 by ~38%; needed `friction_inv_gttol` tightened to `1e-8` (default `1e-4` false-converges by iter ~16 under p=1's gentler gradient landscape) |
 | **Budd p=q=1, cf501=0.0001 regularised** | **60.4** | — | **best RMSE found anywhere in this project.** C-field roughness also improves (0.82→0.18, matching p=3's own 0.17) — smoother *and* more accurate, not a tradeoff. **Never run through the actual production `ssa_friction_inv_reg_lcurve` step** — validated only via an ad-hoc scratchpad script (`p1q1_reg_sweep2.py`); its raw execution output exists (`execution_p1q1_reg_sweep2/`) but was never finalised into a saved `.nc`, and `friction_law` in `ais_0.1_param.py` is still set to `'schoof'`, not `'budd'`. |
 
+**Correction (2026-11-17): the production Schoof run did not start from `C_init=5000` or use
+`Cmax=0.85`** (the statements in the row above, §1's note below, §6 and §7 are wrong on this). Its
+input `.bin` shows Cmax 2.0 and a start C that is the Schoof equivalent, at observed speed, of
+the drag of a Budd p=q=1 inversion (`execution_constrain_ab_off`) — i.e. a drag-matched warm
+start, not the uniform start described. It also used `AIS3_param.nc`'s uninverted shelf B and a
+grounded surface that is in no saved model file. Full recovered recipe and the new
+`ssa_friction_inv_schoof` step that rebuilds it: `post_inversion_pipeline_worklog.md`,
+2026-11-17 entry.
+
 **Reconciliation note (added after the fact — this table and §5.4/§6/§7 below were written
 before both developments in the last two rows above, and are kept as the historical record of
 that phase of work, not a currently-accurate production status):**
