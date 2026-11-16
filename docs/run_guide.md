@@ -82,7 +82,7 @@ options with their defaults, and the `qsub` command with the step's resources:
 
 ```bash
 cd config/notebooks
-qsub -q hugemem -l ncpus=48,mem=1450GB,walltime=45:00:00 -v NB=ais_0.1/15_ho_relaxation.ipynb launch_notebook.pbs
+qsub -q hugemem -l ncpus=48,mem=1450GB,walltime=45:00:00 -v NB=ais_0.1/16_ho_relaxation.ipynb launch_notebook.pbs
 ```
 
 The executed copy goes to `executed/<name>.<jobid>.ipynb` next to the notebook.
@@ -131,20 +131,52 @@ one, and that is by design (§4z correction). Only HO propagates its relaxed sta
 
 ## 4. Upstream: SSA inversion (`ais_0.1.py`)
 
-These steps are done and you shouldn't need to rerun them. The list is here for reference.
+Model states are not distributed: `models/` is not in git, so a new checkout starts empty and
+you produce every state yourself, running the steps below in order and then one of the two
+tracks (§5 HO, §6 SSA). The maintainer's run of these steps is complete; the table lists
+what each step writes and the run settings in use.
+
+**Ice-shelf rheology B.** Every step that needs the shelf B (`load_shelf_rheology_B()` in both
+drivers, `ssa_inverted_solve`, the forward checks) reads
+`models/AIS3_ssa_rheology_floating_inv_lcurve/run_004_1_10_1e-17/`, the step's own output at
+cf101=1, cf103=10, cf502=1e-17. The maintainer's copy was saved there from the one-off
+`execution_newB_rheology` run by `finalize_newB_rheology.py`; today's step builds identical
+inputs, so a run from scratch produces the same field. The June 2026 `run_004`, made before the
+thickness-floor fixes, is kept as `run_004_1_10_1e-17.jun30_before_geometry_fixes`.
+`AIS3_inverted.nc` and the existing HO track were built with that June field, while the friction
+inversions and the SSA track used the newer one (worklog 2026-11-16).
+
+**Two inputs the steps do not yet produce on their own.** In the maintainer's run they came
+from one-off runs, so a run from scratch stops at, or differs from, these points until they are
+folded into the pipeline:
+
+- **Schoof friction field** (`friction_lcurve_run = 'schoof_m1qn3_tightrestol_cmax2.0'`, used by
+  `ssa_inverted_solve` while `friction_law = 'schoof'`). It came from a one-off m1qn3 run whose
+  script was lost. The step `ssa_friction_inv_schoof` (launcher
+  `launch_ssa_friction_inv_schoof.pbs`) now rebuilds it from the Budd p=q=1 field below: submit
+  it once to start the inversion (48 cores, about 36 h), and again when that has finished to
+  save `AIS3_ssa_friction_inv_reg_lcurve/schoof_from_budd_cmax2.0/`. Then set
+  `friction_lcurve_run` to that name. The result is not bit-identical to the maintainer's field
+  (the original start field and grounded surface could not be fully recovered; worklog
+  2026-11-17); the first rebuild is being validated against the RMSE of 70.43.
+- **Budd p=q=1 field** for the SSA track: see the bullet below the table.
 
 | step | output |
 |---|---|
 | `process_domain`, `mesh`, `param` | `AIS3_mesh.nc`, `AIS3_param.nc` |
 | `ssa_rheology_floating_inv_sensit` / `_lcurve` | `AIS3_ssa_rheology_floating_inv_lcurve/run_004_1_10_1e-17/` (the `rheology_lcurve_run` in use) |
 | `ssa_friction_inv_sensit` / `_lcurve` / `_reg_lcurve` | `AIS3_ssa_friction_inv_reg_lcurve/<run>/` |
-| `ssa_inverted_solve` | `AIS3_inverted.nc` (Schoof, `C_init=5000`, `Cmax=0.85`, grounded RMSE 70.43) |
+| `ssa_friction_inv_schoof` | `AIS3_ssa_friction_inv_reg_lcurve/schoof_from_budd_cmax2.0/` (HO track only) |
+| `ssa_inverted_solve` | `AIS3_inverted.nc` (Schoof, Cmax 2.0, grounded RMSE 70.43) |
 
 - `friction_law` must match between `ais_0.1.py` and `ais_0.1_param.py`. Both are set by
   hand and are currently `'schoof'`.
 - The Budd p=q=1 field (RMSE 60.4) that the SSA track uses was salvaged into
-  `AIS3_ssa_friction_inv_reg_lcurve/run_001_10_100_0.0001/` by `finalize_p1q1_reg_lcurve.py`.
-  It has never been produced by `ssa_friction_inv_reg_lcurve` itself (inversion log §7 item 9).
+  `AIS3_ssa_friction_inv_reg_lcurve/run_001_10_100_0.0001/` by `finalize_p1q1_reg_lcurve.py`,
+  from a one-off sweep (`execution_p1q1_reg_sweep2/`, script not in the repository). It has
+  never been produced by `ssa_friction_inv_reg_lcurve` itself (inversion log §7 item 9). From
+  scratch, run that step with the Budd settings (`friction_law = 'budd'` in both files) for the
+  `cf501 = 1e-4` point and check the grounded RMSE against 60.4.
 - Settings that must not regress, because each fixed a real failure (inversion log §2, §6):
   - Budd `C_init=1.8` with bounds `(0.1, 10)`
   - `friction_cf101/cf103 = 10/100`

@@ -2973,3 +2973,60 @@ AIS3_PROJ_END=2300 (drivers 182423946 / 182423947; logs proj_ho_relaxfix_*_2100-
   before their chain qsub). Checks: bash -n on all launchers, a held qsub for relative log
   paths (deleted), notebook static test 23/23, setup test on both projection notebooks.
   Old copies: session scratchpad (`*.before_site`, `pbs_before_site/`, `notebooks_before_site/`).
+- 2026-11-16: HO ctrl complete through 2300 (2300 checkpoint 17:0x; last three chunks ran on the
+  site-settings code). HO ssp585 - ctrl (ISMIP VAF, mm, + = rise): 2100 -71, 2150 -124,
+  2200 -102, 2250 +57, 2300 +319. SSA at the same years: -73, -143, -148, -19, +211. HO ctrl
+  drift 2250-2300: -10 mm/decade (gaining). HO turns positive about 2235, SSA about 2255; HO
+  ends 108 mm higher.
+- Shelf rheology B differs between the tracks. AIS3_inverted.nc (so the whole HO track) has the
+  shelf B of the June models/AIS3_ssa_rheology_floating_inv_lcurve/run_004_1_10_1e-17 (100% of
+  226,372 shelf vertices identical). The friction inversions and the SSA track
+  (ssa_inverted_solve_budd) use execution_newB_rheology/run_001_1_10_1e-17 via
+  load_shelf_rheology_B. newB / run_004: median 0.99, 5-95% 0.78-1.37, max |rel diff| ~2.
+  So HO forward runs use a different shelf B from the one their friction field was fitted
+  with, and HO vs SSA differences include this as well as the flow approximation.
+- Reproducibility check: today's ssa_rheology_floating_inv_lcurve step builds the newB input
+  exactly (358 marshalled fields identical; only friction law Budd vs Schoof differs, which does
+  not act on a floating-only domain). A from-scratch run of that step reproduces newB.
+- Figure docs/figures/projections_ho_vs_ssa_2300.png (plot_collapse_and_ho.py, now plots to the
+  last common year; the 2100 version is kept). It computes HO SLE from the base-layer thickness
+  history: ssp585 - ctrl 2100/2150/2200/2250/2300 = -69.5/-119.8/-95.9/+62.1/+323.6 mm (the
+  ISSM IceVolumeAboveFloatation scalar gives -71/-124/-102/+57/+319). Controls by 2300: HO -254,
+  SSA -119 mm. The overview deck's HO vs SSA slide now shows this figure.
+- Shelf rheology now from models/ (option 1, 2026-11-16). The June run_004 directory was moved
+  (mv -n) to run_004_1_10_1e-17.jun30_before_geometry_fixes; finalize_newB_rheology.py saved the
+  newB run as models/AIS3_ssa_rheology_floating_inv_lcurve/run_004_1_10_1e-17/. load_shelf_rheology_B
+  in both drivers now reads that file (rheology_lcurve_run); checked bit-identical to the old
+  direct load of execution_newB_rheology (226,372 vertices, B identical). ssa_inverted_solve and
+  the forward checks read the same file, so all steps now use one shelf B. No existing model file
+  changed: AIS3_inverted.nc and the HO track keep the June field (record it as such).
+- Schoof friction lineage (HO track only; the SSA track uses Budd p=q=1), 2026-11-17. The
+  production field (models/AIS3_ssa_friction_inv_reg_lcurve/schoof_m1qn3_tightrestol_cmax2.0,
+  run 2026-08-16) was made by a scratchpad script that no longer exists (no copy anywhere on
+  gdata, home or /scratch). Recovered from its .bin:
+  - Start C is not C_init=5000 (inversion_worklog.md and ais_0.1_param.py say so; wrong). It is
+    the Schoof C giving the same drag, at observed speed, as a Budd p=q=1 field
+    (tau = C_b^2 N u), with Cmax 2.0 and m 1/3. Budd parent: execution_constrain_ab_off/
+    run_001_10_100_0.0001 (2026-08-12, outbin record 1; the use_constrain_regions A/B "off"
+    run, never saved to models/). Exact (5e-15) on 97.9% of grounded vertices; on the other
+    2.1% (26,145, continent-wide) the drag was lowered by an unrecorded rule (median x0.8),
+    including all 248 vertices where the Budd drag exceeds Cmax*N. The Aug 12-15 Schoof tests
+    (budd_corrected_v6 etc.) used the same target drag with their own Cmax.
+  - Shelf B: AIS3_param.nc's own (no inverted shelf B loaded; 100% of values match).
+  - Pins: constrain_Schoof.exp (2,184 extra vertices). cf101 10, 15 inside PIG_Outline.exp
+    (91,166 vertices); cf103 23; cf501 7e-8; no masks. Bounds 50..8000 grounded, 0 floating.
+    m1qn3 maxiter 170, maxsteps 800, dxmin 1e-5, dfmin_frac 0.1, gttol 1e-4; restol 1e-3,
+    reltol 1e-2, maxiter 300. 48 cores, 36.6 h.
+  - Geometry: the grounded surface/base differ from today's driver (and from both Budd
+    inversions) at 252,226 vertices, by -1308..+984 m; the values are in no saved model file.
+    So the production C was fitted on a different surface from the one ssa_inverted_solve uses
+    it with.
+  - New step ssa_friction_inv_schoof (ais_0.1.py; launcher launch_ssa_friction_inv_schoof.pbs)
+    rebuilds this from pipeline inputs: today's geometry, the Budd field
+    run_001_10_100_0.0001 (the SSA track's), the formula above with the drag capped at 0.95
+    Cmax*N, and all the settings above. Dry run: 358 of 362 marshalled fields identical to
+    production; the rest are C, surface, base and name. Start C from the SSA Budd field: 5.4%
+    exact, corr 0.981 vs production (from constrain_ab_off: 97.9% exact). Submitted
+    2026-11-17 as schoof_from_budd_cmax2.0 in execution_ssa_friction_inv_schoof/; to be
+    judged on RMSE after ssa_inverted_solve (production 70.43) and correlation with the
+    production field.

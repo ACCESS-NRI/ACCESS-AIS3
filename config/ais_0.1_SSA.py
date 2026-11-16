@@ -142,22 +142,13 @@ def _interp_apply(values, vtx, wts, simplex, fill_value=np.nan):
 
 
 def load_shelf_rheology_B():
-    """Identical to ais_0.1.py's own helper -- copied, not imported, deliberately (see
-    module docstring). The validated floating-shelf rheology result, independent of
-    friction law entirely."""
-    _cl = pyissm.model.classes.cluster.gadi()
-    _cl.codepath = os.environ['ISSM_DIR'] + '/bin'
-    _cl.executionpath = f'{site.ROOT}/execution_newB_rheology'
-    _cl.login = site.USER; _cl.project = site.PROJECT; _cl.storage = site.STORAGE
-    mshelf = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
-    mshelf.mask.ice_levelset = pyissm.model.param.kill_icebergs(mshelf)
-    sel = (mshelf.mask.ocean_levelset < 0) & (mshelf.mask.ice_levelset < 0)
-    mshelf = mshelf.extract(sel)
-    mshelf.cluster = _cl
-    mshelf.settings.waitonlock = 0
-    mshelf.inversion.iscontrol = 0
-    mshelf.miscellaneous.name = 'run_001_1_10_1e-17'
-    mr = pyissm.model.execute.solve(mshelf, 'Stressbalance', load_only=True, runtime_name=False, check_consistency=False)
+    """Same as ais_0.1.py's helper -- copied, not imported, deliberately (see module docstring).
+    Floating-ice rheology B from the shelf rheology inversion, independent of friction law:
+    models/AIS3_ssa_rheology_floating_inv_lcurve/run_004_1_10_1e-17/ (the ais_0.1.py
+    rheology_lcurve_run). Until 2026-11-16 this loaded execution_newB_rheology/run_001_1_10_1e-17,
+    which finalize_newB_rheology.py saved there unchanged."""
+    run = 'run_004_1_10_1e-17'
+    mr = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{run}/{run}.nc')
     return np.asarray(mr.mesh.extractedvertices).ravel(), np.asarray(mr.results.StressbalanceSolution.MaterialsRheologyBbar).ravel()
 
 

@@ -46,6 +46,8 @@ PURPOSE = {
     'ssa_friction_inv_sensit': 'cf101/cf103 weight sweep for the grounded friction inversion.',
     'ssa_friction_inv_lcurve': 'Unregularised grounded friction inversion (the baseline for the regularised run).',
     'ssa_friction_inv_reg_lcurve': 'cf501-regularised friction inversion L-curve, warm-started from the baseline.',
+    'ssa_friction_inv_schoof': 'Schoof friction inversion for the HO track, started from the Budd p=q=1 field. '
+                               'Submits the solve; run again once it has finished to save the result.',
     'ssa_inverted_solve': 'Combine the inverted B and C on the full continent and run a forward SSA solve '
                           '(the production Schoof state that seeds the HO track).',
     'ssa_relaxation': 'SSA relaxation of the inverted state (comparison baseline only).',
@@ -75,6 +77,7 @@ LAUNCHER = {
         'ho_relaxation': 'launch_ho_relaxation.pbs',
         'historical_dhdt_tuning': 'launch_historical_dhdt_tuning.pbs',
         'projection_ssp': 'launch_projection_ho.pbs',
+        'ssa_friction_inv_schoof': 'launch_ssa_friction_inv_schoof.pbs',
         None: 'launch_ho_friction_inv.pbs',   # every other step: normal-queue outer driver
     },
     'ais_0.1_SSA.py': {
