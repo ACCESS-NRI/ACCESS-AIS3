@@ -7,13 +7,18 @@
 #PBS -l mem=190GB
 #PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
 #PBS -l wd
-#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/config/launch_nb_ssa_friction_inv.pbs.out
-#PBS -e /g/data/au88/jh7060/ACCESS-AIS3/config/launch_nb_ssa_friction_inv.pbs.err
+#PBS -o launch_nb_ssa_friction_inv.pbs.out
+#PBS -e launch_nb_ssa_friction_inv.pbs.err
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
 
 unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
-/scratch/au88/jh7060/mamba/envs/pyissm/bin/jupyter nbconvert \
+"$(dirname "$AIS3_PYTHON")/jupyter" nbconvert \
     --to notebook --execute \
     --ExecutePreprocessor.kernel_name=pyissm \
     --ExecutePreprocessor.timeout=3300 \
-    --output /g/data/au88/jh7060/ACCESS-AIS3/config/ais_0.1_ssa_friction_inv.executed.ipynb \
-    /g/data/au88/jh7060/ACCESS-AIS3/config/ais_0.1_ssa_friction_inv.ipynb
+    --output ais_0.1_ssa_friction_inv.executed.ipynb \
+    ais_0.1_ssa_friction_inv.ipynb

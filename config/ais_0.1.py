@@ -10,7 +10,14 @@ import xarray as xr
 import os
 import glob
 import copy
+import sys
 from pathlib import Path
+
+# Site settings (paths, NCI project, ISSM build): edit config/site.env, not this file. Found
+# from this script's folder, or from the working directory upwards in a generated notebook.
+_here = Path(globals().get('__file__', Path.cwd() / '_')).resolve().parent
+sys.path[:0] = [str(p) for p in (_here, *_here.parents) if (p / 'ais3_site.py').exists()][:1]
+import ais3_site as site
 
 
 def racmo_mean_smb(md, y0, y1):
@@ -217,8 +224,8 @@ def load_shelf_rheology_B():
     """
     _cl = pyissm.model.classes.cluster.gadi()
     _cl.codepath = os.environ['ISSM_DIR'] + '/bin'
-    _cl.executionpath = '/g/data/au88/jh7060/ACCESS-AIS3/execution_newB_rheology'
-    _cl.login = 'jh7060'; _cl.project = 'au88'; _cl.storage = 'gdata/au88'
+    _cl.executionpath = f'{site.ROOT}/execution_newB_rheology'
+    _cl.login = site.USER; _cl.project = site.PROJECT; _cl.storage = site.STORAGE
 
     mshelf = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
     mshelf.mask.ice_levelset = pyissm.model.param.kill_icebergs(mshelf)
@@ -236,8 +243,8 @@ def load_shelf_rheology_B():
 ## ------------------------------------
 
 # Change directory to gdata to prevent storage limits in $HOME
-os.chdir('/g/data/au88/jh7060/ACCESS-AIS3/')
-os.environ['ISSM_DIR'] = '/g/data/vk83/apps/spack/1.1/release/linux-x86_64/issm-git.2026.05.18_2026.05.18-kgta35igm37z4qnqnul7rcmgx2inftqd'
+os.chdir(site.ROOT)
+os.environ['ISSM_DIR'] = site.ISSM_DIR
 
 # Should plots be generated?
 plot = True
@@ -246,22 +253,22 @@ save = True
 inversion_sensitivity = False
 
 # Define execution directory
-execution_dir = '/g/data/au88/jh7060/ACCESS-AIS3/execution'
+execution_dir = f'{site.ROOT}/execution'
 
 # Define location to save final models
-model_dir = '/g/data/au88/jh7060/ACCESS-AIS3/models'
+model_dir = f'{site.ROOT}/models'
 
 # Define domain_file
-domain_file = ('/g/data/au88/jh7060/ACCESS-AIS3/assets/ais_domain.exp')
+domain_file = f'{site.ROOT}/assets/ais_domain.exp'
 
 # Define param_file
-param_file = ('/g/data/au88/jh7060/ACCESS-AIS3/config/ais_0.1_param.py')
+param_file = f'{site.CONFIG}/ais_0.1_param.py'
 
 # Define cluster requirements
 cluster = pyissm.model.classes.cluster.gadi()
 cluster.codepath = os.environ['ISSM_DIR']+'/bin'
 cluster.executionpath = execution_dir
-cluster.storage = 'gdata/au88+gdata/vk83'
+cluster.storage = site.STORAGE
 cluster.moduleuse = ['/g/data/vk83/modules/']
 cluster.moduleload = ['access-issm_ad/2026.05.0']  # was access-issm/2025.11.0: executing a
 # 2026.05.18 binary under a 2025.11.0 module load -- a stale-module mismatch caught and fixed
@@ -273,8 +280,8 @@ cluster.moduleload = ['access-issm_ad/2026.05.0']  # was access-issm/2025.11.0: 
 cluster.np = 48
 cluster.memory = 190
 cluster.time = 60*48
-cluster.login = 'jh7060'
-cluster.project = 'au88'
+cluster.login = site.USER
+cluster.project = site.PROJECT
 
 # List all steps for clarity
 all_steps = [
@@ -377,7 +384,7 @@ friction_inv_gttol = 1e-8
 # flag is OFF by default until an actual A/B test shows it changes anything for Budd -- see
 # ssa_friction_inv_reg_lcurve below.
 use_constrain_regions = False
-constrain_exp_file = '/g/data/au88/jh7060/ACCESS-AIS3/assets/constrain_Budd.exp'
+constrain_exp_file = f'{site.ROOT}/assets/constrain_Budd.exp'
 
 # Grounded-ice friction C field, in two stages (see ssa_friction_inv_lcurve /
 # ssa_friction_inv_reg_lcurve below):
@@ -428,7 +435,7 @@ if 'process_domain' in steps:
 
     # Write buffered extent to file for use as model domain
     print(f" - Saving to file...")
-    pyissm.tools.exp.gdf_to_exp(coastline_100km_buffer, '/g/data/au88/jh7060/ACCESS-AIS3/assets/ais_domain.exp')
+    pyissm.tools.exp.gdf_to_exp(coastline_100km_buffer, domain_file)
 
 
 ## ------------------------------------
@@ -520,7 +527,7 @@ if 'mesh' in steps:
 
     if plot:
         areas = pyissm.model.mesh.get_element_areas_volumes(md.mesh.elements, md.mesh.x, md.mesh.y)
-        fig, ax = pyissm.plot.plot_model_field(md,
+        fig, ax, _trip = pyissm.plot.plot_model_field(md,
                                                np.sqrt(areas*2)/1e3,
                                                show_cbar = True,
                                                vmin = 0.25,
@@ -2318,9 +2325,9 @@ if 'melt_gamma_tuning' in steps:
 
     from scipy.interpolate import RegularGridInterpolator, NearestNDInterpolator
 
-    ISMIP7_OCEAN = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/parameterisations/ocean'
+    ISMIP7_OCEAN = f'{site.ISMIP_DIR}/ISMIP7/AIS/parameterisations/ocean'
     BASIN_FILE = f'{ISMIP7_OCEAN}/imbie2/basin_numbers_ismip8km_v2.nc'
-    ZHOU_TF_FILE = ('/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/ocean/climatology/'
+    ZHOU_TF_FILE = (f'{site.ISMIP_DIR}/ISMIP7/AIS/obs/ocean/climatology/'
                      'zhou_annual_06_nov/tf/v3/tf_AIS_obs_ocean_climatology_zhou_annual_06_nov_v3_1972-2024.nc')
     TIME_SENTINEL = 1e9  # ISSM timeseries convention for a constant (non-time-varying) field
     FLOOR_TOLERANCE = 0.5  # m, identifies vertices sitting at the 100 m thickness floor
@@ -2766,7 +2773,7 @@ if 'historical_dhdt_tuning' in steps:
     else:
         print(f"-- Final chunk complete -- full 1995-2019 run finished. Running dH/dt diagnostics...")
         print(f"-- Comparing simulated dH/dt against MIPKIT's dhdt_cpom (1993-2019)...")
-        mipkit = xr.open_dataset('/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/mipkit/AntarcticaObsISMIP7-v1.2.nc')
+        mipkit = xr.open_dataset(f'{site.ISMIP_DIR}/ISMIP7/AIS/obs/mipkit/AntarcticaObsISMIP7-v1.2.nc')
         # dhdt_cpom is annual 1993-2019 on the 1km grid (y1km, x1km) -- use its LAST available
         # year as the closest match to our run's 2019 endpoint rather than trying to
         # reconstruct a full matching time series from a 27-step coordinate whose exact
@@ -2853,10 +2860,12 @@ if 'projection_ssp' in steps:
     import subprocess
     import re
     import json
+    import time as _time
+    t_wall0 = _time.time()
     import netCDF4
     from scipy.spatial import Delaunay
 
-    FORCING_ROOT = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS'
+    FORCING_ROOT = f'{site.ISMIP_DIR}/ISMIP7/AIS'
     SMB_PARAM = 'dEBM2-8000m'
     CLIM_Y0, CLIM_Y1 = 1995, 2014
     START_YEAR = 2019.0
@@ -3128,11 +3137,93 @@ if 'projection_ssp' in steps:
         wall_min = int(hh) * 60 + int(mm)
     except (KeyError, AttributeError):
         pass
-    md.settings.waitonlock = max(30, wall_min - 120)
-    print(f"   inner solve time {md.cluster.time} min; wait budget {md.settings.waitonlock} min")
+    def _budget():
+        return max(30, int(wall_min - 120 - (_time.time() - t_wall0) / 60))
 
+    def _solve_watched(md, budget_min):
+        """solve() without pyissm's blind lock-file wait, as in ais_0.1_SSA.py: submit, then poll for
+        the lock file AND for the end of the inner job (the PBS usage footer in its outlog). A job
+        that has ended without writing its lock file has failed; pyissm would wait out the whole
+        budget (two SIGBUS kills of ctrl inner solves left the driver idle for 18 h and 43 h,
+        2026-10-30/31). Returns (md, ok)."""
+        # waitonlock must stay > 0 in the marshalled model -- ISSM writes the lock file only then;
+        # batch=True makes solve() return straight after qsub instead of running its own wait.
+        md.settings.waitonlock = max(1, int(budget_min))
+        # a reused run directory may hold a stale lock (would load old results), a finished outlog
+        # (would look like a failure) or a failed attempt's logs and partial outbin. pyissm's launch
+        # runs rm -rf on the run directory, so move them to a sibling <run dir>_attempts/ first
+        # (renamed, not deleted; a rename inside the run directory was wiped with it)
+        rdir0 = f'{md.cluster.executionpath}/{md.miscellaneous.name}'
+        stamp = int(_time.time())
+        for ext in ('lock', 'outlog', 'errlog', 'outbin'):
+            f = f'{rdir0}/{md.miscellaneous.name}.{ext}'
+            if os.path.exists(f):
+                os.makedirs(f'{rdir0}_attempts', exist_ok=True)
+                os.rename(f, f'{rdir0}_attempts/{md.miscellaneous.name}.{ext}.prev{stamp}')
+        # core dumps from a crashed attempt (the only SIGBUS diagnostics; worklog 6.22)
+        for f in glob.glob(f'{rdir0}/core.*'):
+            os.makedirs(f'{rdir0}_attempts', exist_ok=True)
+            os.rename(f, f'{rdir0}_attempts/{os.path.basename(f)}.prev{stamp}')
+        md = pyissm.model.execute.solve(md, 'Transient', batch=True, load_only=False, runtime_name=False)
+        rdir = f'{md.cluster.executionpath}/{md.private.runtimename}'
+        lock = f'{rdir}/{md.miscellaneous.name}.lock'
+        outlog = f'{rdir}/{md.miscellaneous.name}.outlog'  # PBS appends its usage footer when the job ends
+        t_start, ended, missing = _time.time(), 0, 0
+        while True:
+            _time.sleep(60)
+            if os.path.exists(lock):
+                break
+            try:
+                ended = ended + 1 if 'Exit Status:' in open(outlog, errors='replace').read()[-4000:] else 0
+            except OSError:
+                ended = 0
+            if ended >= 2:  # job over for two polls and still no lock file
+                print(f"   inner job for {md.miscellaneous.name} ended without a lock file -- failed; see {outlog}")
+                return md, False
+            # a failed qsub (PBS server unreachable just after maintenance, 2026-11-11) leaves no job
+            # and no outlog: three polls with neither means the submission failed
+            if not os.path.exists(outlog):
+                q = subprocess.run(['qselect', '-u', os.environ.get('USER', ''), '-N', f'{md.miscellaneous.name}.queue'],
+                                   capture_output=True, text=True)
+                missing = missing + 1 if (q.returncode == 0 and not q.stdout.strip()) else 0
+                if missing >= 3:
+                    print(f"   no queued or running job for {md.miscellaneous.name} and no outlog -- submission failed?")
+                    return md, False
+            if (_time.time() - t_start) / 60 > budget_min:
+                print(f"   wait budget {budget_min} min used up for {md.miscellaneous.name}")
+                return md, False
+        return pyissm.model.execute.load_results_from_cluster(md), True
+
+    print(f"   inner solve time {md.cluster.time} min; wait budget {_budget()} min")
     print(f"-- Submitting and waiting on {run_name}...")
-    md = pyissm.model.execute.solve(md, 'Transient', load_only=False, runtime_name=False)
+    md, ok = _solve_watched(md, _budget())
+    # The SIGBUS kills were not reproducible (both ctrl chunks passed on rerun): retry once if the
+    # driver has time for another queue wait plus a full inner solve.
+    if not ok and _budget() > md.cluster.time + 6 * 60:
+        print(f"-- retrying {run_name} once (after 10 min)")
+        _time.sleep(600)
+        md, ok = _solve_watched(md, _budget())
+    if not ok:
+        # No time left for a retry in this driver (ssp585 2280-2290 SIGBUS after a 9 h queue wait,
+        # 2026-11-12, left the chain idle 22 h): submit a fresh driver for the same chunk instead.
+        # It restarts from the same checkpoint. At most one per chunk: AIS3_PROJ_RESUB is passed
+        # only here, never to the next-chunk driver.
+        n_resub = int(os.environ.get('AIS3_PROJ_RESUB', '0'))
+        if not smoke and n_resub < 1 and not os.path.exists(stop_path):
+            env = ','.join([f'{k}={os.environ[k]}' for k in
+                            ('AIS3_STEPS', 'AIS3_PROJ_SCENARIO', 'AIS3_PROJ_GCM', 'AIS3_PROJ_FORCING',
+                             'AIS3_PROJ_MELT', 'AIS3_PROJ_END', 'AIS3_PROJ_HIST_TAG') if os.environ.get(k)]
+                           + [f'AIS3_PROJ_RESUB={n_resub + 1}'])
+            log = (f'{site.CONFIG}/logs/'
+                   f'proj_ho_{exp}_{current_time:.0f}-resub{n_resub + 1}_{int(_time.time())}')
+            out = subprocess.run(['qsub', *site.qsub_args(), '-v', env, '-N', f'ho_{exp}'[:15],
+                                  '-o', log + '.out', '-e', log + '.err', f'{site.CONFIG}/launch_projection_ho.pbs'],
+                                 capture_output=True, text=True)
+            if out.returncode == 0:
+                raise SystemExit(f"{run_name}: inner solve failed -- no checkpoint written; resubmitted "
+                                 f"driver {out.stdout.strip()} for the same chunk (resub {n_resub + 1})")
+            print(f"   resubmit failed: {out.stderr.strip()}")
+        raise SystemExit(f"{run_name}: inner solve failed -- no checkpoint written, chain stopped")
 
     # -- History (annual): base layer, plus surface speed -----------------------------------
     ts = md.results.TransientSolution
@@ -3180,9 +3271,9 @@ if 'projection_ssp' in steps:
             env = ','.join(f'{k}={os.environ[k]}' for k in
                            ('AIS3_STEPS', 'AIS3_PROJ_SCENARIO', 'AIS3_PROJ_GCM', 'AIS3_PROJ_FORCING',
                             'AIS3_PROJ_MELT', 'AIS3_PROJ_END', 'AIS3_PROJ_HIST_TAG') if os.environ.get(k))
-            log = f'/g/data/au88/jh7060/ACCESS-AIS3/config/logs/proj_ho_{exp}_{t1:.0f}-next'
-            out = subprocess.run(['qsub', '-v', env, '-N', f'ho_{exp}'[:15], '-o', log + '.out', '-e', log + '.err',
-                                  '/g/data/au88/jh7060/ACCESS-AIS3/config/launch_projection_ho.pbs'],
+            log = f'{site.CONFIG}/logs/proj_ho_{exp}_{t1:.0f}-next'
+            out = subprocess.run(['qsub', *site.qsub_args(), '-v', env, '-N', f'ho_{exp}'[:15],
+                                  '-o', log + '.out', '-e', log + '.err', f'{site.CONFIG}/launch_projection_ho.pbs'],
                                  capture_output=True, text=True)
             print(f"   next chunk submitted: {out.stdout.strip()} {out.stderr.strip()}")
         elif t1 < end_year:

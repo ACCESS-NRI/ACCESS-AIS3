@@ -1,0 +1,8 @@
+#!/bin/bash
+# qsub with the NCI project and storage from site.env, which override the #PBS -P and
+# -l storage lines in the launchers. Use it exactly like qsub, from config/:
+#   ./submit -v AIS3_STEPS=mesh launch_ais_0.1.pbs
+#   cd notebooks && ../submit -q hugemem -l ncpus=48,mem=1450GB,walltime=45:00:00 -v NB=... launch_notebook.pbs
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+set -a; . "$here/site.env"; set +a
+exec qsub -P "$AIS3_PROJECT" -l storage="$AIS3_STORAGE" "$@"

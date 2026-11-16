@@ -16,7 +16,6 @@ command is in each notebook's header) or open it in a Jupyter session with enoug
 the step's outer driver.
 """
 import ast
-import datetime
 import re
 import sys
 import textwrap
@@ -311,9 +310,8 @@ def header_markdown(driver, step, purpose, banner, reads, writes, opts, res, lau
     lst = lambda xs: '\n'.join(f'- `{x}`' for x in xs) if xs else '- (none found in the code)'
     parts = [
         f'# `{step}`',
-        f'> Generated from `config/{driver}` by `config/make_step_notebooks.py` on '
-        f'{datetime.date.today().isoformat()}. Edit the driver and regenerate; changes made here are '
-        f'overwritten.',
+        f'> Generated from `config/{driver}` by `config/make_step_notebooks.py`. Edit the driver '
+        f'and regenerate; changes made here are overwritten.',
         purpose,
         f'**Reads** (`load_model` calls in this step):\n{lst(reads)}',
         f'**Writes** (`save_model` calls in this step):\n{lst(writes)}',
