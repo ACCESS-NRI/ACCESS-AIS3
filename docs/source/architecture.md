@@ -28,8 +28,8 @@ operation, runs ISSM when required, and saves a checkpoint.
 
 | Track | Driver | Model | Purpose |
 |---|---|---|---|
-| Higher order (HO) | `config/ais_0.1.py` | 3-D, vertically extruded mesh | Thermal state, HO friction work, relaxation, historical evolution, and a projection scaffold. |
-| Pure SSA | `config/ais_0.1_SSA.py` | 2-D mesh | A separate, lower-cost workflow for inversion, historical evolution, and implemented projection experiments. |
+| Higher order (HO) | `config/ais_0.1.py` | 3-D, vertically extruded mesh | Thermal state, HO friction work, relaxation, historical evolution, and implemented projections. Long projections have a pinned-velocity/thickness-growth caveat; see [validation](validation.md). |
+| Pure SSA | `config/ais_0.1_SSA.py` | 2-D mesh | A separate, lower-cost workflow for inversion, historical evolution, SSP projections, shelf-collapse experiments, and LARMIP sensitivity runs. |
 
 The SSA driver is intentionally independent: it does not import or execute the HO driver,
 and keeps its own step selection and settings. This prevents queued jobs from sharing
@@ -47,6 +47,10 @@ involve two PBS jobs and two queue waits.
 - `models/` contains named model states, restart checkpoints, and selected diagnostic outputs.
 - `execution/` and related execution directories contain ISSM run inputs, binaries, queue
   files, and solver logs.
+- `config/site.env` and `config/ais3_site.py` hold and resolve site-specific paths and
+   settings; `config/submit` applies the configured NCI project and storage to `qsub`.
+- `config/notebooks/` contains generated, per-step notebooks; the Python drivers remain
+   their source of truth.
 - `config/logs/` and launcher output files contain job-driver logs.
 
 These outputs are operational artifacts, not source modules. For the exact current
@@ -57,6 +61,7 @@ inputs, outputs, and restart rules, use the [Gadi run guide](gadi.md) and
 
 - Driver stage logic: `config/ais_0.1.py` and `config/ais_0.1_SSA.py`.
 - Model fields and physical parameterization: `config/ais_0.1_param.py`.
+- Site-specific paths and job environment: `config/site.env` and `config/ais3_site.py`.
 - Cluster submission details: the corresponding `config/launch_*.pbs` launcher.
 - Detailed design history and evidence: `docs/inversion_worklog.md`,
    `docs/post_inversion_pipeline_worklog.md` (including the projection experiment record).

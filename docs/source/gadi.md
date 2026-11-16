@@ -32,6 +32,12 @@ cd config
 qsub -v AIS3_STEPS=historical_dhdt_tuning_ssa launch_ais_0.1_SSA.pbs
 ```
 
+Site-specific defaults (project, storage, Python environment, ISSM build, and forcing path)
+are in `config/site.env`, resolved by `config/ais3_site.py`. Override an individual setting
+in the job environment when needed. Use `config/submit` instead of raw `qsub` when you need
+the project and storage values from `site.env` applied to the submission; PBS directives
+cannot source that file themselves.
+
 Use the launcher and resource settings documented for that stage. Do not infer that all
 launchers have interchangeable PBS resource requests: HO memory requirements are much
 higher than SSA's.
@@ -68,6 +74,9 @@ the inner ISSM job.
 - Choose a new tag or archive an existing output before rerunning. Several stages refuse
   to overwrite outputs; others use the existing checkpoint to resume.
 - Check the relevant queue and resource limits before requesting a long HO solve.
+- For a per-stage interactive or batch notebook, use the generated notebooks under
+  `config/notebooks/`; regenerate them from the Python drivers rather than editing their
+  generated code.
 
 The detailed run guide currently documents Gadi project `au88` and contains user- and
 filesystem-specific paths. It must be adapted before use from another account or checkout.

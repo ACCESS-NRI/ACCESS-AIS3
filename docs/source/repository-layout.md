@@ -11,11 +11,14 @@ packages or modules.
 | `config/ais_0.1_SSA.py` | Independent pure-SSA driver. | [SSA workflow](workflows.md#pure-ssa-track) |
 | `config/ais_0.1_param.py` | Model masks, geometry, velocity, rheology, friction, and other fields. | [Parameterization](architecture.md#from-inputs-to-model-state) |
 | `config/launch_*.pbs` | PBS launchers for drivers and standalone scripts. | [Running on Gadi](gadi.md) |
+| `config/site.env`, `config/ais3_site.py`, `config/submit` | Site-specific environment defaults, path resolution, and a project/storage-aware `qsub` wrapper. | [Running on Gadi](gadi.md) |
+| `config/notebooks/` | Generated step-by-step notebooks, sourced from the Python drivers. | Follow the driver and notebook-generation instructions in the [run guide](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/run_guide.md). |
 | `config/*.py` | Stage-specific analysis, finalization, plotting, and validation scripts. | [Workflow map](workflows.md) |
 | `config/notebooks/` | One generated, runnable notebook per driver step (`ais_0.1/`, `ais_0.1_SSA/`), the `launch_notebook.pbs` launcher, and hand-written step notes in `notes/`. | [Step notebooks](workflows.md#step-notebooks) |
 | `config/make_step_notebooks.py` | Regenerates `config/notebooks/` from the drivers and `notes/`. | [Contributing](contributing.md#change-a-workflow) |
 | `config/*.ipynb` | Older hand-ported development notebooks (`ais_0.1_*.ipynb`, August 2026). Out of date. | Use `config/notebooks/` instead. |
 | `assets/` | Domain outlines and constraint `.exp` inputs. | [Architecture](architecture.md) |
+| `assets/larmip3/`, `assets/larmip2/` | LARMIP sector masks and comparison data used by the projection sensitivity work. | Projection details in the [pipeline worklog](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/post_inversion_pipeline_worklog.md). |
 | `models/` | Saved model states, restart checkpoints, and selected products. | [Workflow outputs](workflows.md) |
 | `execution/`, `execution_SSA/`, `execution_*` | ISSM run directories, solver inputs/outputs, and experiment artifacts. | [Runtime and outputs](architecture.md#runtime-and-output-boundaries) |
 | `docs/` | Human-authored run guides, worklogs, figures, and Sphinx source under `docs/source/`. | [Development record](development-record.md) |

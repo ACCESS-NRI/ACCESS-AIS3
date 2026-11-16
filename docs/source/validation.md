@@ -34,6 +34,24 @@ Likewise, friction law, effective-pressure source, mesh/geometry treatment, cost
 weights, and checkpoint provenance are part of the result—not incidental settings. Link
 reported diagnostics to the exact model file and configuration used.
 
+## Higher-order projection caveat
+
+The HO projection chain was implemented and extended beyond 2100, but its current long-term
+thickness output is not suitable for interpretation without qualification. The HO initialization
+contains observed-velocity Dirichlet pins on about 8.4% of grounded area. In pinned columns,
+velocity cannot adjust as thickness changes; extreme thickness growth appeared in the late HO
+projection years. Releasing the pins in a diagnostic solve instead reintroduced extreme speeds,
+so this is not a simple constraint-removal fix. The CTRL and SSP585 HO chains have been extended
+and resumed with watched-solve/retry handling, but their long-term results remain unqualified while
+the growth issue is investigated. The SSA projections are the primary projection set; the HO
+comparison is currently useful through 2100 with this caveat. See pipeline worklog sections
+6.20–6.22 for the diagnosis and latest operational notes.
+
+The SSA projection work also includes prescribed shelf-collapse masks and LARMIP melt
+sensitivities. These are scenario/parameter experiments, not observations or probabilistic
+predictions. For collapse experiments, detached floating remnants are removed as unanchored
+pieces; state that implementation choice when discussing their results.
+
 ## Evidence and status records
 
 - [Inversion worklog](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/inversion_worklog.md): present-day friction/rheology investigation,
