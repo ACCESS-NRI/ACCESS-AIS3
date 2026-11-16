@@ -136,3 +136,17 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+
+# ACCESS-AIS3 model outputs, ISSM run directories and job logs (large, not source)
+/models/
+/execution*/
+/config/logs/
+/config/*.pbs.out
+/config/*.pbs.err
+# LaTeX build files
+docs/slides/**/*.aux
+docs/slides/**/*.log
+docs/slides/**/*.nav
+docs/slides/**/*.out
+docs/slides/**/*.snm
+docs/slides/**/*.toc
