@@ -59,7 +59,7 @@
 \newcommand{\stat}[3]{{\serif\Large\bfseries\color{#1}#2}\par\vspace{0.5mm}{\small\color{muted}#3}\par\vspace{4mm}}
 
 \title{ACCESS-AIS3}
-\author{Justin Hew}
+\author{Justin Hew \and Felicity McCormack}
 \institute{ACCESS-NRI}
 \date{ACCESS-NRI Cryosphere Workshop}
 
@@ -76,7 +76,7 @@
 An Antarctic ice-sheet model for ACCESS: how it is built, how well it matches today, and what it projects to 2300
 \end{minipage}
 \vfill
-{\small\color{mist}Justin Hew \textperiodcentered{} ACCESS-NRI Cryosphere Workshop}
+{\small\color{mist}Justin Hew \textperiodcentered{} Felicity McCormack \textperiodcentered{} ACCESS-NRI Cryosphere Workshop}
 \vspace{6mm}
 \note{Introduce yourself. AIS3 is the Antarctic ice-sheet configuration we are building for ACCESS. Today: what it is, whether it matches the observed ice sheet, and what it says about Antarctica's sea-level contribution out to 2300.}
 \end{frame}}
@@ -249,16 +249,16 @@ An Antarctic ice-sheet model for ACCESS: how it is built, how well it matches to
 
 % ============================================================ HO vs SSA
 \nosource
-\begin{frame}{The 3D model gives the same climate response to 2100}
+\begin{frame}{The 3D model agrees to 2100, then turns to ice loss sooner}
 \framesubtitle{A check with full 3D flow}
 \vspace{1mm}
-\centering\includegraphics[height=0.5\textheight]{ho_vs_ssa.png}\par\vspace{3mm}
+\centering\includegraphics[height=0.47\textheight]{ho_vs_ssa_2300.png}\par\vspace{2mm}
 \raggedright
 \begin{columns}[T]
-\column{0.48\textwidth}{\color{muted}\textbf{\color{blue}$-$70 vs $-$73 mm} by 2100 under SSP5-8.5: HO and SSA agree within 5\%}
-\column{0.48\textwidth}{\color{muted}\textbf{\color{accent}Caveat:} HO holds observed speed on 8\% of grounded ice and drifts more without climate change}
+\column{0.48\textwidth}{\small\color{muted}\textbf{\color{blue}$-$70 vs $-$73 mm} by 2100; \textbf{\color{blue}+324 vs +211 mm} by 2300 (HO vs SSA, SSP5-8.5)}
+\column{0.48\textwidth}{\small\color{muted}\textbf{\color{accent}Caveat:} HO friction only partly re-inverted, 8\% of grounded ice held at observed speed, control drifts twice as fast}
 \end{columns}
-\note{HO resolves the vertical structure of the flow and is about 15 times more expensive. From its own 2019 state, its response to SSP5-8.5 matches SSA within 5\% to 2100, and the post-2180 turnaround happens at the same time in both. Caveats: HO's control run gains ice faster, and to keep HO stable we hold velocity at observed values on about 8\% of the grounded ice, much of it near the Ross grounding line. HO is a check on the approximation, not a replacement for the SSA projections.}
+\note{HO resolves the vertical structure of the flow and is about 15 times more expensive. From its own 2019 state, its response to SSP5-8.5 matches SSA within 5\% to 2100. After that HO gains less ice, turns to net loss around 2235 instead of 2255, and is 324 mm against 211 mm by 2300. Do not read the post-2200 gap as pure 3D physics: HO starts from the SSA friction with only a partial HO re-inversion, its ice-shelf stiffness comes from an earlier rheology inversion than SSA's, its control run gains ice about twice as fast, and to keep it stable we hold velocity at observed values on about 8\% of grounded ice, much of it near the Ross grounding line. HO is a check on the approximation, not a replacement for the SSA projections.}
 \end{frame}
 
 % ============================================================ takeaways
@@ -280,22 +280,22 @@ An Antarctic ice-sheet model for ACCESS: how it is built, how well it matches to
 \colorbox{#1}{\begin{minipage}[t][16mm][t]{\dimexpr\linewidth-2\fboxsep\relax}\raggedright\vspace{1.5mm}
 {\scriptsize\bfseries\color{#2}#3}\par\vspace{1mm}{\scriptsize\bfseries #4}\end{minipage}}}
 \newcommand{\sarrow}{\column{0.018\textwidth}\centering{\color{mist}\scriptsize$\rightarrow$}}
-\source{18 notebooks for the full 3D (HO) pipeline, plus 5 for the faster SSA track that starts from the same inversions.}
+\source{19 notebooks for the full 3D (HO) pipeline, plus 5 for the faster SSA track that starts from the same inversions.}
 \begin{frame}{Every step of the pipeline is a notebook you can read and run}
 \framesubtitle{Use it}
 \vspace{2mm}
 \begin{columns}[c,onlytextwidth]
 \column{0.15\textwidth}\stage{paper2}{blue}{00--02}{\color{navy}Domain, mesh}
 \sarrow
-\column{0.15\textwidth}\stage{paper2}{blue}{03--09}{\color{navy}Inversions}
+\column{0.15\textwidth}\stage{paper2}{blue}{03--10}{\color{navy}Inversions}
 \sarrow
-\column{0.15\textwidth}\stage{paper2}{blue}{10--11}{\color{navy}Initial state}
+\column{0.15\textwidth}\stage{paper2}{blue}{11--12}{\color{navy}Initial state}
 \sarrow
-\column{0.15\textwidth}\stage{paper2}{blue}{12--15}{\color{navy}3D setup, melt}
+\column{0.15\textwidth}\stage{paper2}{blue}{13--16}{\color{navy}3D setup, melt}
 \sarrow
-\column{0.15\textwidth}\stage{paper2}{blue}{16}{\color{navy}History 1995--2019}
+\column{0.15\textwidth}\stage{paper2}{blue}{17}{\color{navy}History 1995--2019}
 \sarrow
-\column{0.15\textwidth}\stage{navy}{sand}{17}{\color{cream}Projections}
+\column{0.15\textwidth}\stage{navy}{sand}{18}{\color{cream}Projections}
 \end{columns}
 \vspace{3mm}
 \begin{columns}[T,onlytextwidth]
@@ -348,7 +348,7 @@ An Antarctic ice-sheet model for ACCESS: how it is built, how well it matches to
 \vfill
 {\serif\fontsize{40}{44}\selectfont\bfseries\color{cream}Thank you}\par\vspace{4mm}
 {\Large\color{sand}Questions?}\par\vspace{4mm}
-{\color{mist}Justin Hew \textperiodcentered{} ACCESS-NRI}\par\vspace{2mm}
+{\color{mist}Justin Hew (ACCESS-NRI) \textperiodcentered{} Felicity McCormack}\par\vspace{2mm}
 {\color{sand}\href{https://github.com/ACCESS-NRI/ACCESS-AIS3}{github.com/ACCESS-NRI/ACCESS-AIS3}}
 \vfill
 {\scriptsize\color{mist}Computing on NCI's Gadi. Ice-sheet model: ISSM. Forcing: CMIP6 via ISMIP6/ISMIP7. Data: MEaSUREs velocity, BedMachine v3, RACMO2.4p1, CPOM altimetry, Aq1, ISMIP7. Full list on the next slide.}
