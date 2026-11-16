@@ -1,0 +1,17 @@
+#!/bin/bash
+# Test the step notebooks (see test_notebooks.py). Submit from config/notebooks/, e.g.
+#   qsub -q normal -l ncpus=4,mem=16GB,walltime=02:00:00 -v LEVEL=setup test_notebooks.pbs
+#   qsub -q normal -l ncpus=8,mem=190GB,walltime=10:00:00 -v LEVEL=dry,ONLY='ais_0.1_SSA/*' test_notebooks.pbs
+#   qsub -q hugemem -l ncpus=24,mem=720GB,walltime=24:00:00 -v LEVEL=dry,ONLY='ais_0.1/1[2-7]_*' test_notebooks.pbs
+# PYISSM_ENV overrides the Python environment (must provide jupyter and the 'pyissm' kernel).
+#PBS -N ais3_nbtest
+#PBS -P au88
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+: "${LEVEL:?pass the level with qsub -v LEVEL=static|setup|dry}"
+set -a; . ../site.env; set +a  # site settings: config/site.env
+PYISSM_ENV=${PYISSM_ENV:-$(dirname "$(dirname "$AIS3_PYTHON")")}
+"$PYISSM_ENV/bin/python" -u test_notebooks.py --level "$LEVEL" ${ONLY:+--only "$ONLY"}
