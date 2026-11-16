@@ -1,0 +1,18 @@
+#!/bin/bash
+#PBS -N ho_pins_map
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=01:30:00
+#PBS -l ncpus=12
+#PBS -l mem=190GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o launch_check_ho_pins_map.pbs.out
+#PBS -e launch_check_ho_pins_map.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
+"$AIS3_PYTHON" -u check_ho_pins_map.py
