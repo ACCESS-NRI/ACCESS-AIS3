@@ -7,9 +7,14 @@
 #PBS -l mem=1GB
 #PBS -l storage=gdata/au88
 #PBS -l wd
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
 # Runs after driver 181546272 exits (worklog 6.16). If the 2125 checkpoint exists, releases the STOP
 # file (renamed, not deleted) and resubmits the Ross ramp coupledN_p3 run in 8-yr chunks.
-M=/g/data/au88/jh7060/ACCESS-AIS3/models; C=/g/data/au88/jh7060/ACCESS-AIS3/config
+M=$(cd .. && pwd)/models; C=$PWD
 exp=larmip_r3_ramp_coupledN_p3
 if [ ! -f $M/AIS3_proj_ssa_${exp}_2125.nc ]; then
   echo "NO 2125 CHECKPOINT - not resubmitting"; ls -lt $M/AIS3_proj_ssa_${exp}_*; exit 1

@@ -7,8 +7,13 @@
 #PBS -l ncpus=24
 #PBS -l storage=gdata/au88+gdata/vk83
 #PBS -l wd
-#PBS -o /g/data/au88/jh7060/ACCESS-AIS3/plot_grounded_friction_regularized.out
+#PBS -o ../plot_grounded_friction_regularized.out
 #PBS -j oe
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
 
-/scratch/au88/jh7060/mamba/envs/pyissm/bin/python -u \
-    /g/data/au88/jh7060/ACCESS-AIS3/config/plot_grounded_friction_regularized.py
+"$AIS3_PYTHON" -u \
+    plot_grounded_friction_regularized.py
