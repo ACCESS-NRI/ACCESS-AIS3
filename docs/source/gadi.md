@@ -78,5 +78,9 @@ the inner ISSM job.
   `config/notebooks/`; regenerate them from the Python drivers rather than editing their
   generated code.
 
-The detailed run guide currently documents Gadi project `au88` and contains user- and
-filesystem-specific paths. It must be adapted before use from another account or checkout.
+The run guide's `config/site.env` defaults target project `au88` and the ACCESS-NRI Gadi
+installations. For another account or project, change those settings or pass the corresponding
+`AIS3_*` overrides; use `config/submit` when the project and storage must be applied to the PBS
+submission. Repository and user paths are resolved at runtime rather than requiring launcher
+edits. Some legacy experiment scripts and the ancillary hydrology dataset path remain specific
+to the current environment, so check those before running those particular workflows.
