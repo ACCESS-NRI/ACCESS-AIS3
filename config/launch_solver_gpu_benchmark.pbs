@@ -1,0 +1,20 @@
+#!/bin/bash
+# qsub -v PHASE=submit[,CASES=SBM+SBH+TRM+TRH][,TAG=_x] launch_solver_gpu_benchmark.pbs   (then PHASE=analyze once they finish)
+#PBS -N solver_bench
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=01:30:00
+#PBS -l ncpus=4
+#PBS -l mem=64GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o launch_solver_gpu_benchmark.pbs.out
+#PBS -e launch_solver_gpu_benchmark.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
+echo "PHASE=$PHASE CASES=$CASES TAG=$TAG"
+"$AIS3_PYTHON" -u solver_gpu_benchmark.py
