@@ -57,14 +57,21 @@ import numpy as np
 import xarray as xr
 import os
 import glob
+import sys
 from pathlib import Path
 from scipy.spatial import Delaunay
 
-os.chdir('/g/data/au88/jh7060/ACCESS-AIS3/')
-os.environ['ISSM_DIR'] = '/g/data/vk83/apps/spack/1.1/release/linux-x86_64/issm-git.2026.05.18_2026.05.18-kgta35igm37z4qnqnul7rcmgx2inftqd'
+# Site settings (paths, NCI project, ISSM build): edit config/site.env, not this file. Found
+# from this script's folder, or from the working directory upwards in a generated notebook.
+_here = Path(globals().get('__file__', Path.cwd() / '_')).resolve().parent
+sys.path[:0] = [str(p) for p in (_here, *_here.parents) if (p / 'ais3_site.py').exists()][:1]
+import ais3_site as site
 
-model_dir = '/g/data/au88/jh7060/ACCESS-AIS3/models'
-execution_dir = '/g/data/au88/jh7060/ACCESS-AIS3/execution_SSA'
+os.chdir(site.ROOT)
+os.environ['ISSM_DIR'] = site.ISSM_DIR
+
+model_dir = f'{site.ROOT}/models'
+execution_dir = f'{site.ROOT}/execution_SSA'
 
 save = True
 diagnostics = True
@@ -73,14 +80,14 @@ plot = True
 cluster = pyissm.model.classes.cluster.gadi()
 cluster.codepath = os.environ['ISSM_DIR'] + '/bin'
 cluster.executionpath = execution_dir
-cluster.storage = 'gdata/au88+gdata/vk83+gdata/av17'
+cluster.storage = site.STORAGE
 cluster.moduleuse = ['/g/data/vk83/modules/']
 cluster.moduleload = ['access-issm_ad/2026.05.0']
 cluster.np = 48
 cluster.memory = 190
 cluster.time = 60 * 48
-cluster.login = 'jh7060'
-cluster.project = 'au88'
+cluster.login = site.USER
+cluster.project = site.PROJECT
 
 FRICTION_RUN_DIR = f'{model_dir}/AIS3_ssa_friction_inv_reg_lcurve/run_001_10_100_0.0001'
 FRICTION_RUN_NAME = 'run_001_10_100_0.0001'
@@ -140,8 +147,8 @@ def load_shelf_rheology_B():
     friction law entirely."""
     _cl = pyissm.model.classes.cluster.gadi()
     _cl.codepath = os.environ['ISSM_DIR'] + '/bin'
-    _cl.executionpath = '/g/data/au88/jh7060/ACCESS-AIS3/execution_newB_rheology'
-    _cl.login = 'jh7060'; _cl.project = 'au88'; _cl.storage = 'gdata/au88'
+    _cl.executionpath = f'{site.ROOT}/execution_newB_rheology'
+    _cl.login = site.USER; _cl.project = site.PROJECT; _cl.storage = site.STORAGE
     mshelf = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
     mshelf.mask.ice_levelset = pyissm.model.param.kill_icebergs(mshelf)
     sel = (mshelf.mask.ocean_levelset < 0) & (mshelf.mask.ice_levelset < 0)
@@ -344,8 +351,8 @@ if 'melt_gamma_tuning_ssa' in steps:
 
     from scipy.interpolate import RegularGridInterpolator, NearestNDInterpolator
 
-    ISMIP7_OCEAN = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/parameterisations/ocean'
-    ZHOU_TF_FILE = ('/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/ocean/climatology/'
+    ISMIP7_OCEAN = f'{site.ISMIP_DIR}/ISMIP7/AIS/parameterisations/ocean'
+    ZHOU_TF_FILE = (f'{site.ISMIP_DIR}/ISMIP7/AIS/obs/ocean/climatology/'
                      'zhou_annual_06_nov/tf/v3/tf_AIS_obs_ocean_climatology_zhou_annual_06_nov_v3_1972-2024.nc')
     BASIN_FILE = f'{ISMIP7_OCEAN}/imbie2/basin_numbers_ismip8km_v2.nc'
     TIME_SENTINEL = 1e9
@@ -489,7 +496,7 @@ if 'historical_dhdt_tuning_ssa' in steps:
     pyissm.model.io.save_model(md, f'{model_dir}/AIS3_historical_1995_2019_SSA.nc')
 
     print("-- Comparing simulated dH/dt against MIPKIT's dhdt_cpom (1993-2019)...")
-    mipkit = xr.open_dataset('/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/mipkit/AntarcticaObsISMIP7-v1.2.nc')
+    mipkit = xr.open_dataset(f'{site.ISMIP_DIR}/ISMIP7/AIS/obs/mipkit/AntarcticaObsISMIP7-v1.2.nc')
     # BUGFIX (2026-09-21, found via check_historical_chunk1.py crashing on the HO track's
     # identical pattern): xr_to_mesh requires a 2D variable on a rectilinear grid, but
     # mipkit's own dhdt_cpom is 3D (carries cpom_dhdt_time) -- passing the full
@@ -591,7 +598,7 @@ if 'projection_ssp_ssa' in steps:
     import subprocess
     import re
 
-    FORCING_ROOT = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS'
+    FORCING_ROOT = f'{site.ISMIP_DIR}/ISMIP7/AIS'
     SMB_PARAM = 'dEBM2-8000m'
     CLIM_Y0, CLIM_Y1 = 1995, 2014
     START_YEAR = 2019.0
@@ -796,7 +803,7 @@ if 'projection_ssp_ssa' in steps:
 
     if larmip_region:
         from scipy.interpolate import NearestNDInterpolator
-        mask_path = os.environ.get('AIS3_LARMIP_MASK', '/g/data/au88/jh7060/ACCESS-AIS3/assets/larmip3/LARMIP3_sectors-1km.nc')
+        mask_path = os.environ.get('AIS3_LARMIP_MASK', f'{site.ROOT}/assets/larmip3/LARMIP3_sectors-1km.nc')
         ds_m = xr.open_dataset(mask_path)
         mvar = os.environ.get('AIS3_LARMIP_MASK_VAR') or next(v for v in ds_m.data_vars if ds_m[v].ndim == 2)
         mvals = ds_m[mvar].values.astype(float)
@@ -1094,17 +1101,22 @@ if 'projection_ssp_ssa' in steps:
         # first version set it to 0 and every solve looked failed); batch=True makes solve() return
         # straight after qsub instead of running its own wait.
         md.settings.waitonlock = max(1, int(budget_min))
-        # a reused run directory may hold a stale lock (would load old results) or a finished outlog
-        # (would look like a failure): set them aside first (renamed, not deleted)
+        # a reused run directory may hold a stale lock (would load old results), a finished outlog
+        # (would look like a failure) or a failed attempt's logs and partial outbin. pyissm's launch
+        # runs rm -rf on the run directory, so move them to a sibling <run dir>_attempts/ first
+        # (renamed, not deleted; a rename inside the run directory was wiped with it)
+        rdir0 = f'{md.cluster.executionpath}/{md.miscellaneous.name}'
+        stamp = int(_time.time())
         for ext in ('lock', 'outlog', 'errlog', 'outbin'):
-            f = f'{md.cluster.executionpath}/{md.miscellaneous.name}/{md.miscellaneous.name}.{ext}'
+            f = f'{rdir0}/{md.miscellaneous.name}.{ext}'
             if os.path.exists(f):
-                os.rename(f, f'{f}.prev{int(_time.time())}')
+                os.makedirs(f'{rdir0}_attempts', exist_ok=True)
+                os.rename(f, f'{rdir0}_attempts/{md.miscellaneous.name}.{ext}.prev{stamp}')
         md = pyissm.model.execute.solve(md, 'Transient', batch=True, load_only=False, runtime_name=False)
         rdir = f'{md.cluster.executionpath}/{md.private.runtimename}'
         lock = f'{rdir}/{md.miscellaneous.name}.lock'
         outlog = f'{rdir}/{md.miscellaneous.name}.outlog'  # PBS appends its usage footer when the job ends
-        t_start, ended = _time.time(), 0
+        t_start, ended, missing = _time.time(), 0, 0
         while True:
             _time.sleep(60)
             if os.path.exists(lock):
@@ -1116,6 +1128,15 @@ if 'projection_ssp_ssa' in steps:
             if ended >= 2:  # job over for two polls and still no lock file
                 print(f"   inner job for {md.miscellaneous.name} ended without a lock file -- failed; see {outlog}")
                 return md, False
+            # a failed qsub (PBS server unreachable just after maintenance, 2026-11-11) leaves no job
+            # and no outlog: three polls with neither means the submission failed
+            if not os.path.exists(outlog):
+                q = subprocess.run(['qselect', '-u', os.environ.get('USER', ''), '-N', f'{md.miscellaneous.name}.queue'],
+                                   capture_output=True, text=True)
+                missing = missing + 1 if (q.returncode == 0 and not q.stdout.strip()) else 0
+                if missing >= 3:
+                    print(f"   no queued or running job for {md.miscellaneous.name} and no outlog -- submission failed?")
+                    return md, False
             if (_time.time() - t_start) / 60 > budget_min:
                 print(f"   wait budget {budget_min} min used up for {md.miscellaneous.name}")
                 return md, False
@@ -1156,7 +1177,8 @@ if 'projection_ssp_ssa' in steps:
             if not ok:  # NaNs here were not reproducible (2059 failed once, passed on rerun): retry once
                 budget = max(30, int(wall_min - 90 - (_time.time() - t_wall0) / 60))
                 if budget > md.cluster.time + 60:
-                    print(f"-- retrying {sub_name} once")
+                    print(f"-- retrying {sub_name} once (after 10 min)")
+                    _time.sleep(600)
                     md, ok = _solve_watched(md, budget)
             if not ok:
                 # Keep what this chunk did: end it at s0 with a checkpoint (the state the failed
@@ -1233,9 +1255,9 @@ if 'projection_ssp_ssa' in steps:
                             'AIS3_PROJ_FRICTION', 'AIS3_PROJ_TIME_FACTOR', 'AIS3_PROJ_RESIDUE', 'AIS3_PROJ_COLLAPSE_INNER_MIN',
                             'AIS3_PROJ_CHUNK_YEARS')
                        if os.environ.get(k))
-            log = f'/g/data/au88/jh7060/ACCESS-AIS3/config/logs/proj_ssa_{exp}_{t1:.0f}-next'
-            out = subprocess.run(['qsub', '-v', env, '-N', f'proj_{exp}'[:15], '-o', log + '.out', '-e', log + '.err',
-                                  '/g/data/au88/jh7060/ACCESS-AIS3/config/launch_projection_ssa.pbs'],
+            log = f'{site.CONFIG}/logs/proj_ssa_{exp}_{t1:.0f}-next'
+            out = subprocess.run(['qsub', *site.qsub_args(), '-v', env, '-N', f'proj_{exp}'[:15],
+                                  '-o', log + '.out', '-e', log + '.err', f'{site.CONFIG}/launch_projection_ssa.pbs'],
                                  capture_output=True, text=True)
             print(f"   next chunk submitted: {out.stdout.strip()} {out.stderr.strip()}")
         elif t1 < end_year:

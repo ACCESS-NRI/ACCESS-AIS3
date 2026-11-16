@@ -18,8 +18,11 @@ refuses if any g{i} execution dir already exists -- archive the old ones first (
     qsub -v PHASE=submit launch_melt_gamma_sweep_ssa.pbs   (then PHASE=analyze)
 """
 import os
-os.environ['ISSM_DIR'] = '/g/data/vk83/apps/spack/1.1/release/linux-x86_64/issm-git.2026.05.18_2026.05.18-kgta35igm37z4qnqnul7rcmgx2inftqd'
-os.chdir('/g/data/au88/jh7060/ACCESS-AIS3')
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ais3_site as site  # paths, project, ISSM build: edit config/site.env
+os.environ['ISSM_DIR'] = site.ISSM_DIR
+os.chdir(site.ROOT)
 import copy
 import numpy as np
 import pandas as pd
@@ -29,12 +32,12 @@ from scipy.interpolate import RegularGridInterpolator, NearestNDInterpolator
 
 PHASE = os.environ.get('PHASE', 'analyze')
 
-MODEL_DIR = '/g/data/au88/jh7060/ACCESS-AIS3/models'
-EXECUTION_DIR = '/g/data/au88/jh7060/ACCESS-AIS3/execution_SSA'
-ISMIP7_OCEAN = '/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/parameterisations/ocean'
-ZHOU_TF_FILE = ('/g/data/au88/ismip6/2300/forcings/ISMIP7/AIS/obs/ocean/climatology/'
+MODEL_DIR = f'{site.ROOT}/models'
+EXECUTION_DIR = f'{site.ROOT}/execution_SSA'
+ISMIP7_OCEAN = f'{site.ISMIP_DIR}/ISMIP7/AIS/parameterisations/ocean'
+ZHOU_TF_FILE = (f'{site.ISMIP_DIR}/ISMIP7/AIS/obs/ocean/climatology/'
                  'zhou_annual_06_nov/tf/v3/tf_AIS_obs_ocean_climatology_zhou_annual_06_nov_v3_1972-2024.nc')
-GAMMA0_FILE = '/g/data/au88/ismip6/2300/forcings/parameterizations/coeff_gamma0_DeltaT_quadratic_local_median.nc'
+GAMMA0_FILE = f'{site.ISMIP_DIR}/parameterizations/coeff_gamma0_DeltaT_quadratic_local_median.nc'
 BASIN_FILE = f'{ISMIP7_OCEAN}/imbie2/basin_numbers_ismip8km_v2.nc'
 MELT_OBS_CSV = f'{ISMIP7_OCEAN}/meltobs/Melt_Paolo_Err_Adusumilli_imbie2_v3.csv'
 TIME_SENTINEL = 1e9
@@ -45,14 +48,14 @@ GAMMA0_VALUES = [100.0, 300.0, 1000.0, 3000.0, 5537.7, 8306.6, 11075.45, 15000.0
 cluster = pyissm.model.classes.cluster.gadi()
 cluster.codepath = os.environ['ISSM_DIR'] + '/bin'
 cluster.executionpath = EXECUTION_DIR
-cluster.storage = 'gdata/au88+gdata/vk83+gdata/av17'
+cluster.storage = site.STORAGE
 cluster.moduleuse = ['/g/data/vk83/modules/']
 cluster.moduleload = ['access-issm_ad/2026.05.0']
 cluster.np = 48
 cluster.memory = 190
 cluster.time = 60 * 48
-cluster.login = 'jh7060'
-cluster.project = 'au88'
+cluster.login = site.USER
+cluster.project = site.PROJECT
 
 
 def run_name(i):

@@ -13,7 +13,8 @@ unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
 set -euo pipefail
 cd "$PBS_O_WORKDIR"
 : "${NB:?pass the notebook with qsub -v NB=<dir>/<name>.ipynb}"
-PYISSM_ENV=${PYISSM_ENV:-/scratch/au88/jh7060/mamba/envs/pyissm}
+set -a; . ../site.env; set +a  # site settings: config/site.env
+PYISSM_ENV=${PYISSM_ENV:-$(dirname "$(dirname "$AIS3_PYTHON")")}
 outdir="$(dirname "$NB")/executed"
 mkdir -p "$outdir"
 out="$(basename "$NB" .ipynb).${PBS_JOBID%%.*}.ipynb"
