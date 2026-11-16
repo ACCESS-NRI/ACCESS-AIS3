@@ -21,19 +21,22 @@ not a substitute for reading the stage implementation before changing it.
 ## Higher-order track
 
 The HO sequence extends the present-day initialization with vertically resolved physics.
-As documented in the 2026-09-29 pipeline record, the intended sequence is:
+The thermal, calibrated-melt, relaxed-start historical, and projection stages are implemented.
+The HO projection track was extended beyond 2100, but its long-term output is not currently
+qualified because velocity pins can cause unphysical thickness growth; see
+[validation](validation.md). The sequence is:
 
 1. `ho_thermal_steadystate` — establish a thermal state from the inverted model.
 2. `ho_friction_inv` — refine friction under HO physics; this has used chunked restarts.
 3. `melt_gamma_tuning` — apply the calibrated basal-melt parameterization.
 4. `ho_relaxation` — produce a relaxed state before transient evolution.
 5. `historical_dhdt_tuning` — evolve the historical period, with chunked warm restarts.
-6. `projection_ssp` — HO projection scaffold; forcing interpolation and prerequisites remain
-   explicit development concerns.
+6. `projection_ssp` — anomaly-forced projections from the relaxed-start historical state;
+   chunks can resume/retry, but projections beyond 2100 need the pinned-velocity issue resolved.
 
 Consult the [post-inversion pipeline worklog](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/post_inversion_pipeline_worklog.md)
-for the dated stage status and known qualification issues. In particular, a completed
-solver job is not automatically equivalent to a validated science product.
+for dated stage status and qualification issues. In particular, a completed solver job is
+not automatically equivalent to a validated science product.
 
 ## Pure-SSA track
 
@@ -44,11 +47,13 @@ The SSA driver has its own downstream chain:
    different from the HO track.
 3. `melt_gamma_tuning_ssa` — apply the selected melt calibration.
 4. `historical_dhdt_tuning_ssa` — run the historical transient.
-5. `projection_ssp_ssa` — run the SSA projection experiments in chained chunks.
+5. `projection_ssp_ssa` — run the SSA projection experiments in chained chunks. Implemented
+   options include SSP forcing, melt/forcing sensitivities, shelf collapse, and LARMIP
+   experiments; the core campaign and collapse-to-2300 run are recorded in the worklog.
 
-See the [projection experiment record](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/post_inversion_pipeline_worklog.md#6-projections-ssa-track-setup-and-melt-sensitivity-check) for projection forcing,
-experiment naming, output products, and operational choices. For SSA historical validation
-caveats, see [validation](validation.md).
+See the [projection experiment record](https://github.com/ACCESS-NRI/ACCESS-AIS3/blob/main/docs/post_inversion_pipeline_worklog.md#6-projections-ssa-track-setup-and-melt-sensitivity-check)
+for projection forcing, experiment naming, output products, and operational choices. For SSA
+historical validation caveats, see [validation](validation.md).
 
 ## Data-flow rule of thumb
 
