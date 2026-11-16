@@ -2855,3 +2855,121 @@ completed, exit 0. Amundsen 8 m/yr step, exp - ctrl, ISSM VAF, mm SLE:
     body). But it is a choice of ours, not the mask's, and it should be stated wherever the
     collapse results are used.
   - Not yet verified from the 2213 geometry (no ice_levelset in the history files).
+
+### 6.19 HO projections extended to 2300 (2026-10-28)
+
+User decision. ho ctrl and ho ssp585_cesm2_ref_ref resume from their 2100 checkpoints with
+AIS3_PROJ_END=2300 (drivers 182423946 / 182423947; logs proj_ho_relaxfix_*_2100-to2300.out),
+20 more 10-yr chunks each.
+- Recent chunks used 11.4-11.8 h of the 23.2 h inner limit, a 2x margin.
+- Estimate ~95k SU per run, ~3-4 weeks wall clock with hugemem queues.
+- Allocation 2026.q4: 1.35 MSU available.
+- The HO step does not use the collapse runs' watched solve: a failed inner solve still leaves
+  the driver waiting out its budget (6.10). Check the chains for stalls.
+
+### 6.20 HO extension: SIGBUS stalls, watched solve, pinned-velocity runaway; chains stopped (2026-11-05)
+- Two ctrl inner solves died with SIGBUS (2120-2130 at 2127.6, node clx-0023, 2026-10-30;
+  2130-2140 at 2130.4, clx-0015, 2026-10-31). No NaN or residue warnings before; both chunks
+  passed on rerun. ssp585 solved through the second crash window, so not a /g/data outage.
+  ISSM install unchanged since May. Cause not found. Failed dirs kept as
+  `execution/AIS3_proj_ho_relaxfix_ctrl_21{20-2130,30-2140}.failed_sigbus_2026103{0,1}`.
+- An ssp585 driver failed once loading `AIS3_proj_ho_relaxfix_ssp585_cesm2_ref_ref_2130.nc`
+  (HDF error, 2026-10-30 10:52). The rerun loaded the same file fine: a transient read error.
+- Each SIGBUS left the ctrl driver idle until its lock wait timed out (18 h and 43 h).
+  `projection_ssp` in ais_0.1.py now uses the SSA script's watched solve (poll for lock file
+  or PBS footer), with one retry if driver time allows. In use from 2130 (ctrl) and 2180
+  (ssp585): 7 chunks ran clean.
+- **Runaway thickness in HO.** max|dH| per chunk grew ~1.2x per chunk from 2 km (2040-2050) to
+  41 km (ssp585 2210-2220). 57 vertices > 5 km at 2220. Worst at (-2459, 1284) km, northern
+  Peninsula: 875 m (2019) -> 226 km (2220). Another cluster near (-2329, 1052) km.
+  Ice > 5 km = 4.6 mm SLE at 2220 (0.2 mm at 2100), similar in ctrl and ssp585. SSA max H
+  stays < 4.9 km to 2300.
+- Cause: the HO model carries Dirichlet velocities (spcvx/spcvy = observed velocity) on 175,734
+  columns. They come from the three Schoof-subdomain pins
+  (thin ice, C at lower bound, ice_levelset >= 0; ais_0.1.py ~1596-1653) and the
+  domain-boundary pins (~568). The SSA init has none. At the spike vertices vel is constant
+  for 150 years (106.6, 16.6 m/yr; vel_base = vel). Where the pinned field converges, H grows
+  exponentially because the flow cannot respond.
+- The pins hold 1.01 M km2 of grounded ice (8.4% of grounded area) and 36k km2 of shelf at
+  observed speed for the whole run. Only 95k km2 of it is in the Peninsula. This affects
+  every HO transient (historical relaxfix, projections, HO vs SSA comparison), not only the
+  spikes.
+- Chains stopped after their current chunks: `models/AIS3_proj_ho_relaxfix_{ctrl,ssp585_cesm2_ref_ref}.STOP`
+  (ctrl will stop at 2180, ssp585 at 2230). Remove the STOP file and qsub the launcher to resume.
+- Next: map pinned columns against the forced basins; test the HO forward solve with the
+  pins released (all, or only on ice-free / thin-ice vertices) before any HO restart.
+
+### 6.21 HO pins: where they are, and whether HO runs without them (2026-11-06)
+- Chains stopped as planned: ctrl at 2180, ssp585 at 2230 (STOP files left in place).
+- `check_ho_pins_map.py` -> `models/ho_pins_by_basin.csv`, `models/ho_pins_map.png`. Of 175,734 pinned
+  columns, 163,897 are on ice (median H 342 m) and 11,837 are ice-free. None are on the domain
+  boundary (the ocean buffer leaves no ice there). Share of the obs-speed x H flux within 50 km of
+  the GL that sits on pinned columns, by LARMIP-3 sector:
+  Ross (3) 64%, Weddell (1) 20%, EAIS (2) 7%, Peninsula (5) 5%, Amundsen (4) 2%.
+  ISMIP basin 7 is 62%; basins 12 and 13 have 40-50% of their grounded area pinned.
+- `check_ho_unpin.py`: stress-balance-only solves on the HO 2019 state, all converged (exit 0, no NaN).
+  - U0 (as is): max 4.2 km/yr; never-pinned grounded speed/obs median 0.95.
+  - U1 (on-ice pins released): max 7.0e5 m/yr, 265 vertices > 10 km/yr. Released grounded ice:
+    22% > 2x obs, 5% > 10x obs. Never-pinned ice: 26% of vertices change by > 20% vs U0.
+  - U2 (all pins released): max 6.7e8 m/yr, 303 vertices > 10 km/yr.
+  - Fastest vertices are in the Peninsula, (-2328, 1051), (-2392, 1157), (-2271, 944) km, the same
+    area as the thickness spikes.
+  - Releasing the pins brings back the extreme speeds they were added for. The HO friction field
+    in the pinned regions cannot be used without them.
+- So HO's Ross (and partly Weddell) response is largely prescribed; Amundsen is not. For the paper:
+  SSA is the projection set; HO is a comparison to 2100 (spikes < 0.2 mm SLE then), strongest
+  for Amundsen. HO beyond 2100 needs either a pin-free HO friction inversion or a fix for the
+  runaway (e.g. spcthickness on pinned columns) and an explicit caveat.
+
+### 6.22 HO extension resumed; first watched-solve retry; Gadi maintenance (2026-11-09)
+- Chains resumed 2026-11-06 (STOP files kept as `*.STOP.used_20261105`). Reached ctrl 2210 and
+  ssp585 2270 by 2026-11-08 with no other failures.
+- ctrl 2190-2200: the first inner solve (183389044) ended without a lock file; the watched solve
+  retried (183399631), which completed and wrote the 2200 checkpoint. The cause is unknown: the failed
+  attempt's outlog was lost, because pyissm's launch command runs `rm -rf` on the run directory and
+  the stale-file rename put the files inside it. Fixed in both `ais_0.1.py` and `ais_0.1_SSA.py`:
+  the lock/outlog/errlog/outbin of an earlier attempt now move to a sibling `<run dir>_attempts/`.
+- Next drivers (ctrl 2210-2220, ssp585 2270-2280) queued since 2026-11-08 with "Job would cross
+  dedicated time boundary": Gadi maintenance from 04:00 2026-11-10. They start after it.
+  Remaining: ctrl 9 chunks, ssp585 3.
+- max|dH| per chunk still growing: 29 km in ctrl 2190-2200 (6.20).
+- 2026-11-11: after maintenance the ctrl 2210-2220 driver's qsub failed ("qsub: cannot connect to
+  server", errno 15010, 08:39); no inner job existed and the watched solve would have waited out its
+  43 h budget. Both watched solves now also check `qselect -N <name>.queue`: no job and no outlog for
+  three polls = failed submission, and the one retry waits 10 min first. ctrl driver killed and
+  resubmitted from the 2210 checkpoint. ssp585 2270-2280 submitted normally and is solving.
+- 2026-11-12 16:16: third SIGBUS. ssp585 2280-2290 died at 2288.5 (rank 55, node hmem-clx-0046,
+  10.2 h into the solve). The watched solve caught it at once but did not retry: the driver had
+  queued 9 h for the inner job, so 19 h of its 45 h were gone and a 23.2 h retry did not fit.
+  Failed dir archived as `..._2280-2290.failed_sigbus_20261112` (12 core dumps, 157 GB, kept).
+  Resubmitted from the 2280 checkpoint 2026-11-13 (183817808, logs `..._2280-resub.{out,err}`).
+- First usable core dump (the October ones are 0 bytes). Crashing rank: SIGBUS, si_code 2
+  (BUS_ADRERR) inside MUMPS numeric factorisation (`dmumps_fac_arrow_arrange` /
+  `dist_fill_send_buffer`, OpenMP region, called from PETSc `MatLUFactorNumeric` via ISSM
+  `SolverxPetsc`). PETSc's signal handler then took a second SIGBUS while lazily resolving `sleep`,
+  and that fault address lies in the file-backed mapping of `libISSMCore.so` on /g/data/vk83.
+  All 12 cores are from the same node, all in MUMPS arrowhead distribution, two at
+  `__atomic_store@plt`. A read-only library page that cannot be paged in gives exactly this
+  signal, so the likeliest cause is the node losing access to /g/data/vk83 for a moment, not a
+  bug in ISSM or MUMPS (library files unchanged since 2026-05-28). Three different nodes so far
+  (clx-0026, clx-0015, clx-0046), so not one bad node.
+- Auto-resubmit (2026-11-13): when a failed inner solve cannot be retried inside the driver,
+  `projection_ssp` now qsubs a fresh driver for the same chunk (same env plus
+  `AIS3_PROJ_RESUB=1`, log `proj_ho_<exp>_<start>-resub1_<stamp>`), which restarts from the same
+  checkpoint. At most one per chunk: the flag is never passed to next-chunk drivers. Not done for
+  smoke runs or when the STOP file exists. The watched solve also moves `core.*` from a crashed
+  attempt into `<run dir>_attempts/` before pyissm's rm -rf of the run dir. Takes effect from the
+  next driver start (running drivers keep the old code).
+- Configurable paths (2026-11-14). Site settings moved to `config/site.env` (project,
+  storage, Python env, ISSM build, ISMIP forcing dir; env vars override), read by
+  `config/ais3_site.py`. Repo root is derived from the code location, user from `$USER`.
+  Converted: `ais_0.1.py`, `ais_0.1_SSA.py`, `melt_gamma_sweep_ssa.py`, all 88 launchers
+  (`cd` + Python + log paths; `#PBS -o/-e` now relative to `config/`), the notebook
+  launchers, and the notebooks (regenerated, which also picked up the watched-solve and
+  auto-resubmit changes). New `config/submit` = qsub with `-P`/`-l storage` from site.env;
+  chunk resubmits pass the same flags. Defaults reproduce the old values exactly (checked by
+  running both drivers' preambles from another folder); HO inner jobs now also mount av17.
+  Launchers accept submission from `config/` or the repo root (drivers chdir to the root
+  before their chain qsub). Checks: bash -n on all launchers, a held qsub for relative log
+  paths (deleted), notebook static test 23/23, setup test on both projection notebooks.
+  Old copies: session scratchpad (`*.before_site`, `pbs_before_site/`, `notebooks_before_site/`).
