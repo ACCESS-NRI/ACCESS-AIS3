@@ -158,7 +158,10 @@ folded into the pipeline:
   save `AIS3_ssa_friction_inv_reg_lcurve/schoof_from_budd_cmax2.0/`. Then set
   `friction_lcurve_run` to that name. The result is not bit-identical to the maintainer's field
   (the original start field and grounded surface could not be fully recovered; worklog
-  2026-11-17); the first rebuild is being validated against the RMSE of 70.43.
+  2026-11-17). Through `ssa_inverted_solve` it gives a grounded RMSE of 75.7 m/yr, against 72.0
+  for the maintainer's field on the same code. To compare fields without overwriting
+  `AIS3_inverted.nc`, pass `AIS3_INVERTED_FRICTION_RUN=<run>` and `AIS3_INVERTED_TAG=_<tag>`
+  (output `models/AIS3_inverted_<tag>.nc`).
 - **Budd p=q=1 field** for the SSA track: see the bullet below the table.
 
 | step | output |
