@@ -158,37 +158,43 @@ yh2, ho_585 = ho_sle('ssp585_cesm2_ref_ref')
 assert np.array_equal(yh, yh2)
 ssa_ctrl = sle['ctrl'].values
 ssa_585 = sle['ssp585_cesm2_ref_ref'].values
-sel = yr <= 2100
+END = int(min(yh[-1], yr[np.isfinite(ssa_585 - ssa_ctrl)][-1]))  # 2300 once both HO runs are complete
+sel = yr <= END
+ho_d, ssa_d = ho_585 - ho_ctrl, ssa_585 - ssa_ctrl
+dx = 1.5 if END <= 2100 else 4
 
 fig, axs = plt.subplots(1, 2, figsize=(12.5, 4.8))
 ax = axs[0]
-ax.plot(yr[sel], (ssa_585 - ssa_ctrl)[sel], color=SSA_COLOR, label='SSA')
-ax.plot(yh, ho_585 - ho_ctrl, color=ALT_COLOR, label='HO (Blatter-Pattyn)')
+ax.plot(yr[sel], ssa_d[sel], color=SSA_COLOR, label='SSA')
+ax.plot(yh, ho_d, color=ALT_COLOR, label='HO (Blatter-Pattyn)')
 ax.axhline(0, color=INK2, lw=0.8)
-ax.set_xlim(2019, 2100)
+ax.set_xlim(2019, END)
 ax.set_title('a  SSP5-8.5 (CESM2-WACCM) minus control')
 ax.set_ylabel('sea-level contribution (mm)')
-pp.end_labels(ax, [((ssa_585 - ssa_ctrl)[yr == 2100][0], f'SSA {(ssa_585 - ssa_ctrl)[yr == 2100][0]:+.0f}'),
-                   ((ho_585 - ho_ctrl)[-1], f'HO {(ho_585 - ho_ctrl)[-1]:+.0f}')], 2100, dx=1.5)
-ax.legend(loc='lower left')
+pp.end_labels(ax, [(ssa_d[yr == END][0], f'SSA {ssa_d[yr == END][0]:+.0f}'),
+                   (ho_d[yh == END][0], f'HO {ho_d[yh == END][0]:+.0f}')], END, dx=dx)
+ax.legend(loc='upper left' if END > 2100 else 'lower left')
 ax = axs[1]
 ax.plot(yr[sel], ssa_ctrl[sel], color=SSA_COLOR, label='SSA')
 ax.plot(yh, ho_ctrl, color=ALT_COLOR, label='HO (Blatter-Pattyn)')
 ax.axhline(0, color=INK2, lw=0.8)
-ax.set_xlim(2019, 2100)
+ax.set_xlim(2019, END)
 ax.set_title('b  Control run drift (constant 1995-2014 climate)')
-pp.end_labels(ax, [(ssa_ctrl[yr == 2100][0], f'SSA {ssa_ctrl[yr == 2100][0]:+.0f}'),
-                   (ho_ctrl[-1], f'HO {ho_ctrl[-1]:+.0f}')], 2100, dx=1.5)
+pp.end_labels(ax, [(ssa_ctrl[yr == END][0], f'SSA {ssa_ctrl[yr == END][0]:+.0f}'),
+                   (ho_ctrl[yh == END][0], f'HO {ho_ctrl[yh == END][0]:+.0f}')], END, dx=dx)
 ax.legend(loc='lower left')
 for a in axs:
     a.set_xlabel('year')
 fig.suptitle('ACCESS-AIS3: higher-order (HO) vs SSA projections, each from its own 2019 state',
              x=0.01, ha='left', fontsize=12, fontweight='bold')
 fig.tight_layout(rect=(0, 0, 0.95, 0.93))
-out = f'{pp.FIG_DIR}/projections_ho_vs_ssa.png'
+# the 2100-only version stays as projections_ho_vs_ssa.png
+out = f'{pp.FIG_DIR}/projections_ho_vs_ssa{"" if END <= 2100 else f"_{END}"}.png'
 fig.savefig(out, dpi=200)
 print('wrote', out)
-print('HO ssp585-ctrl 2050/2100:', (ho_585 - ho_ctrl)[yh == 2050][0], (ho_585 - ho_ctrl)[-1],
-      '| SSA:', (ssa_585 - ssa_ctrl)[yr == 2050][0], (ssa_585 - ssa_ctrl)[yr == 2100][0])
+for Y in (2050, 2100, 2150, 2200, 2250, 2300):
+    if Y <= END:
+        print(f'HO vs SSA ssp585-ctrl {Y}: {ho_d[yh == Y][0]:+.1f} | {ssa_d[yr == Y][0]:+.1f}   '
+              f'ctrl {ho_ctrl[yh == Y][0]:+.1f} | {ssa_ctrl[yr == Y][0]:+.1f}')
 print('collapse-ref 2100/2200/2300:', *[f'{(col - ref)[yr == Y][0]:+.1f}' for Y in (2100, 2200, 2300)])
 print('DONE')

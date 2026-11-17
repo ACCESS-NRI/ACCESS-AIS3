@@ -207,35 +207,42 @@ def extract_friction_inversion_domain(md):
     return mds
 
 
-def load_shelf_rheology_B():
-    """Load the validated floating-shelf rheology inversion result (extractedvertices, B).
+def exp_contains(exp_file, x, y):
+    """True for points (x, y) inside any polygon of an ISSM .exp file (pure Python, no wrappers).
 
-    execution_newB_rheology/run_001_1_10_1e-17 (2026-07-20) supersedes
-    models/AIS3_ssa_rheology_floating_inv_lcurve/run_004_1_10_1e-17 (2026-06-30, the
-    `rheology_lcurve_run` config value): same regularisation point (cf101=1, cf103=10,
-    cf502=1e-17), recomputed later in this project after several geometry/N-flooring fixes
-    were developed (100m thickness floor, N re-flooring against it, etc.) -- run_004 predates
-    those fixes. This is the actual source the validated grounded-RMSE-60.4 friction result
-    was warm-started from; loading the stale run_004 instead was found (via a direct A/B
-    test) to reproduce RMSE ~114, not ~60 -- see docs/inversion_worklog.md. Not yet promoted
-    into the canonical models/AIS3_ssa_rheology_floating_inv_lcurve/ directory, so this loads
-    it from its original ad-hoc execution directory via solve(load_only=True) instead of
-    io.load_model().
+    Gives the same vertex sets as ContourToNodes(..., 2) for constrain_Schoof.exp and
+    PIG_Outline.exp on this mesh (checked 2026-11-17).
     """
-    _cl = pyissm.model.classes.cluster.gadi()
-    _cl.codepath = os.environ['ISSM_DIR'] + '/bin'
-    _cl.executionpath = f'{site.ROOT}/execution_newB_rheology'
-    _cl.login = site.USER; _cl.project = site.PROJECT; _cl.storage = site.STORAGE
+    from matplotlib.path import Path as _P
+    lines = open(exp_file).read().splitlines()
+    inside = np.zeros(np.size(x), dtype = bool)
+    pts = np.column_stack([np.ravel(x), np.ravel(y)])
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith('## Name'):
+            n = int(lines[i + 3].split()[0])
+            poly = np.array([[float(v) for v in lines[i + 5 + k].split()[:2]] for k in range(n)])
+            inside |= _P(poly).contains_points(pts)
+            i += 5 + n
+        else:
+            i += 1
+    return inside
 
-    mshelf = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
-    mshelf.mask.ice_levelset = pyissm.model.param.kill_icebergs(mshelf)
-    sel = (mshelf.mask.ocean_levelset < 0) & (mshelf.mask.ice_levelset < 0)
-    mshelf = mshelf.extract(sel)
-    mshelf.cluster = _cl
-    mshelf.settings.waitonlock = 0
-    mshelf.inversion.iscontrol = 0
-    mshelf.miscellaneous.name = 'run_001_1_10_1e-17'
-    mr = pyissm.model.execute.solve(mshelf, 'Stressbalance', load_only = True, runtime_name = False, check_consistency = False)
+
+def load_shelf_rheology_B():
+    """Floating-ice rheology B from the shelf rheology inversion: (extracted vertex ids, Bbar).
+
+    Reads models/AIS3_ssa_rheology_floating_inv_lcurve/<rheology_lcurve_run>/, the output of the
+    ssa_rheology_floating_inv_lcurve step at the chosen point (cf101=1, cf103=10, cf502=1e-17;
+    validated grounded RMSE ~60 for the friction inversions warm-started with it). Until
+    2026-11-16 this loaded the one-off execution_newB_rheology/run_001_1_10_1e-17 run directly;
+    that run is what today's step produces (identical inputs), and finalize_newB_rheology.py
+    saved it under run_004_1_10_1e-17. The June 2026 run_004 (before the geometry fixes, RMSE ~114
+    when used as a warm start) is kept as run_004_1_10_1e-17.jun30_before_geometry_fixes;
+    AIS3_inverted.nc and the existing HO track were built with that June field.
+    """
+    mr = pyissm.model.io.load_model(
+        f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
     return np.asarray(mr.mesh.extractedvertices).ravel(), np.asarray(mr.results.StressbalanceSolution.MaterialsRheologyBbar).ravel()
 
 ## ------------------------------------
@@ -296,6 +303,7 @@ all_steps = [
     'ssa_friction_inv_sensit',
     'ssa_friction_inv_lcurve',
     'ssa_friction_inv_reg_lcurve',
+    'ssa_friction_inv_schoof',
     'ssa_inverted_solve',
     'ssa_relaxation',
     'ho_thermal_steadystate',
@@ -409,6 +417,14 @@ if friction_law == 'schoof':
 else:
     friction_baseline_run = f'run_001_{friction_cf101}_{friction_cf103}_1e-08'
     friction_lcurve_run = f'run_001_{friction_cf101}_{friction_cf103}_0.0001'
+
+# Schoof friction field for the HO track, built from scratch by ssa_friction_inv_schoof (see the
+# step for the method). schoof_budd_run is the Budd p=q=1 field it starts from: the
+# ssa_friction_inv_reg_lcurve output, the same field the SSA track uses. schoof_run is the name
+# the result is saved under in models/AIS3_ssa_friction_inv_reg_lcurve/; point
+# friction_lcurve_run at it (above) to use it downstream.
+schoof_budd_run = f'run_001_{friction_cf101}_{friction_cf103}_0.0001'
+schoof_run = 'schoof_from_budd_cmax2.0'
 
 
 ## ------------------------------------
@@ -1123,7 +1139,7 @@ if 'ssa_friction_inv_lcurve' in steps:
     print(f"-- Loading parameterized model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
 
-    print(f"-- Loading SSA floating rheology inversion results (execution_newB_rheology, see load_shelf_rheology_B docstring)...")
+    print(f"-- Loading SSA floating rheology inversion results ({rheology_lcurve_run}, see load_shelf_rheology_B)...")
     _ev, _Bshelf = load_shelf_rheology_B()
 
     print(f"-- Updating rheology field from inversion results...")
@@ -1308,7 +1324,7 @@ if 'ssa_friction_inv_reg_lcurve' in steps:
     print(f"-- Loading parameterized model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
 
-    print(f"-- Loading SSA floating rheology inversion results (execution_newB_rheology, see load_shelf_rheology_B docstring)...")
+    print(f"-- Loading SSA floating rheology inversion results ({rheology_lcurve_run}, see load_shelf_rheology_B)...")
     _ev, _Bshelf = load_shelf_rheology_B()
 
     print(f"-- Updating rheology field from inversion results...")
@@ -1489,6 +1505,164 @@ if 'ssa_friction_inv_reg_lcurve' in steps:
             coeff_masks = {101: mask,
                            103: mask,
                            501: reg_mask})
+
+
+## ------------------------------------
+## Schoof friction inversion for the HO track, started from the Budd p=q=1 field
+## ------------------------------------
+# Rebuilds the Schoof (regularised Coulomb) friction field the HO track starts from. The field
+# in production (schoof_m1qn3_tightrestol_cmax2.0, 2026-08-16) was made by a script that was
+# not kept; its inputs were recovered from the run's own .bin (worklog 2026-11-17) and are
+# reproduced here:
+#   - geometry, N and the subdomain as in ssa_friction_inv_reg_lcurve (100 m floor keeping the
+#     observed surface, N floored at 0.07 of overburden);
+#   - ice-shelf B left at AIS3_param.nc's value: the production run did not load an inverted
+#     shelf B (its floating B matches AIS3_param.nc exactly, neither shelf inversion);
+#   - velocity pinned to observations inside assets/constrain_Schoof.exp;
+#   - starting C: the Schoof C that gives the same basal drag, at the observed speed, as the
+#     Budd p=q=1 field (tau = C_b^2 N u), with Cmax = 2.0 and m = 1/3. The production start
+#     followed this exactly on 97.9% of grounded vertices; on the other 2.1% its drag was
+#     lowered by an unrecorded rule (median x0.8), and on 248 of those the Budd drag exceeds
+#     the Schoof cap Cmax*N, where no Schoof C matches. Here the drag is capped at
+#     schoof_start_cap of Cmax*N instead;
+#   - bounds 50..8000 on grounded ice, 0 on floating ice;
+#   - cost functions 101 (10, 15 inside assets/PIG_Outline.exp), 103 (23) and 501 (7e-8) on
+#     every vertex, no masks;
+#   - m1qn3: maxiter 170, maxsteps 800, dxmin 1e-5, dfmin_frac 0.1, gttol 1e-4; stress balance
+#     restol 1e-3, reltol 1e-2, maxiter 300.
+# The production run took 36.6 h on 48 cores. This step submits the solve and returns; run the
+# step again once it has finished to load the result and save it to
+# models/AIS3_ssa_friction_inv_reg_lcurve/<schoof_run>/<schoof_run>.nc.
+schoof_start_cap = 0.95
+if 'ssa_friction_inv_schoof' in steps:
+
+    print("-------------------------------------------------------------")
+    print(f" SSA SCHOOF FRICTION INVERSION (HO track), from Budd p=q=1")
+    print("-------------------------------------------------------------")
+
+    _out = f'{model_dir}/AIS3_ssa_friction_inv_reg_lcurve/{schoof_run}/{schoof_run}.nc'
+    _exe = f'{site.ROOT}/execution_ssa_friction_inv_schoof'
+    if os.path.exists(_out):
+        raise SystemExit(f'{_out} exists -- move it aside with mv -n to rebuild it')
+
+    print(f"-- Loading parameterized model...")
+    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
+    if type(md.friction).__name__ != 'schoof':
+        raise ValueError("ssa_friction_inv_schoof needs AIS3_param.nc built with friction_law='schoof'")
+
+    print(f"-- Keeping AIS3_param.nc's ice-shelf B (as the production Schoof run did)...")
+
+    print('-- Removing icebergs from ice levelset...')
+    md.mask.ice_levelset = pyissm.model.param.kill_icebergs(md)
+
+    print(f"-- Flooring thin ice at 100m (numerical stability), preserving observed surface...")
+    _ri = md.materials.rho_ice; _rw = md.materials.rho_water
+    _H = np.asarray(md.geometry.thickness).ravel().copy()
+    _ol = np.asarray(md.mask.ocean_levelset).ravel()
+    _surf0 = np.asarray(md.geometry.surface).ravel().copy()
+    _H = np.maximum(_H, 100.0)
+    _flt = _ol < 0
+    _base = np.empty_like(_H); _surf = np.empty_like(_H)
+    _base[_flt] = -_H[_flt] * _ri / _rw; _surf[_flt] = _H[_flt] * (1.0 - _ri / _rw)
+    _surf[~_flt] = _surf0[~_flt]
+    _base[~_flt] = _surf0[~_flt] - _H[~_flt]
+    md.geometry.thickness = _H; md.geometry.base = _base; md.geometry.surface = _surf
+
+    _lim = 0.07
+    N = md.friction.effective_pressure.copy()
+    N[N < 0] = 0
+    N = np.maximum(N, _lim * md.materials.rho_ice * md.constants.g * _H)
+    md.friction.effective_pressure = N
+    md.friction.effective_pressure_limit = _lim
+
+    md.inversion.iscontrol = 1
+    md.verbose.solution = 0
+    md.verbose.qmu = 0
+    md.verbose.control = 1
+
+    print(f"-- Extracting friction-inversion domain (floating/grounded ice-front BC)...")
+    mds = extract_friction_inversion_domain(md)
+    mds.friction.coupling = friction_coupling
+    _Hs = np.asarray(mds.geometry.thickness).ravel()
+    _Ns = mds.friction.effective_pressure.copy(); _Ns[_Ns < 0] = 0
+    mds.friction.effective_pressure = np.maximum(_Ns, 0.07 * mds.materials.rho_ice * mds.constants.g * _Hs)
+    mds.friction.effective_pressure_limit = 0.07
+
+    _x = np.asarray(mds.mesh.x).ravel(); _y = np.asarray(mds.mesh.y).ravel()
+    _cpos = exp_contains(f'{site.ROOT}/assets/constrain_Schoof.exp', _x, _y)
+    mds.stressbalance.spcvx[_cpos] = np.asarray(mds.inversion.vx_obs).ravel()[_cpos]
+    mds.stressbalance.spcvy[_cpos] = np.asarray(mds.inversion.vy_obs).ravel()[_cpos]
+    mds.stressbalance.spcvz[_cpos] = 0
+    print(f"   pinned {int(_cpos.sum())} vertices inside constrain_Schoof.exp to observed velocity")
+
+    print(f"-- Starting C from the Budd p=q=1 field ({schoof_budd_run})...")
+    mdb = pyissm.model.io.load_model(
+        f'{model_dir}/AIS3_ssa_friction_inv_reg_lcurve/{schoof_budd_run}/{schoof_budd_run}.nc')
+    _full = np.zeros(md.mesh.numberofvertices)
+    _full[np.asarray(mdb.mesh.extractedvertices).ravel().astype(int) - 1] = \
+        np.asarray(mdb.results.StressbalanceSolution.FrictionCoefficient).ravel()
+    Cb = _full[np.asarray(mds.mesh.extractedvertices).ravel().astype(int) - 1]
+    _Cmax = 2.0; _m = 1.0 / 3.0
+    _N = np.asarray(mds.friction.effective_pressure).ravel()
+    _u = np.asarray(mds.inversion.vel_obs).ravel() / md.constants.yts   # m/s, as ISSM evaluates the laws
+    _r = np.minimum(Cb**2 * _N * _u / (_Cmax * _N), schoof_start_cap)   # Budd drag / Schoof cap
+    with np.errstate(divide = 'ignore', invalid = 'ignore'):
+        _C = np.sqrt(_r * _Cmax * _N / (_u**_m * (1.0 - _r**(1.0 / _m))**_m))
+    _flt_s = np.asarray(mds.mask.ocean_levelset).ravel() < 0
+    _C[_flt_s | ~np.isfinite(_C)] = 0.05
+    print(f"   {int(np.sum(~_flt_s & (Cb**2 * _u >= schoof_start_cap * _Cmax)))} grounded vertices capped at "
+          f"{schoof_start_cap} of Cmax*N; C {np.min(_C[~_flt_s]):.3g}..{np.max(_C[~_flt_s]):.3g}")
+    mds.friction.C = _C
+    mds.friction.Cmax = np.full(mds.mesh.numberofvertices, _Cmax)
+    mds.friction.m = np.full(np.asarray(mds.friction.m).shape, _m)
+
+    print(f"-- Defining inversion parameters...")
+    mds.inversion = pyissm.model.classes.inversion.m1qn3(mds.inversion)
+    mds.inversion.control_parameters = ['FrictionC']
+    mds.inversion.min_parameters = np.where(_flt_s, 0.0, 50.0)
+    mds.inversion.max_parameters = np.where(_flt_s, 0.0, 8000.0)
+    mds.inversion.maxiter = 170
+    mds.inversion.maxsteps = 800
+    mds.inversion.dxmin = 1e-5
+    mds.inversion.dfmin_frac = 0.1
+    mds.inversion.gttol = 1e-4
+    _pig = exp_contains(f'{site.ROOT}/assets/PIG_Outline.exp', _x, _y)
+    mds.inversion.cost_functions = [101, 103, 501]
+    mds.inversion.cost_functions_coefficients = np.column_stack(
+        [np.where(_pig, 15.0, 10.0), np.full(_pig.size, 23.0), np.full(_pig.size, 7e-8)])
+
+    mds.transient = pyissm.model.classes.transient.deactivate_all(mds.transient)
+    mds.stressbalance.restol = 0.001
+    mds.stressbalance.reltol = 0.01
+    mds.stressbalance.maxiter = 300
+    mds.stressbalance.abstol = np.nan
+    mds.settings.solver_residue_threshold = 1e-3
+
+    mds.cluster = copy.deepcopy(cluster)
+    mds.cluster.executionpath = _exe
+    mds.settings.waitonlock = 0
+    mds.miscellaneous.name = schoof_run
+
+    _done = os.path.exists(f'{_exe}/{schoof_run}/{schoof_run}.outlog') and \
+        'Total elapsed time' in open(f'{_exe}/{schoof_run}/{schoof_run}.outlog').read()
+    if save and _done:
+        print(f"-- Loading the finished solve from {_exe}/{schoof_run}...")
+        mds = pyissm.model.execute.solve(mds, 'Stressbalance', runtime_name = False, load_only = True)
+        _v = np.asarray(mds.results.StressbalanceSolution.Vel).ravel()
+        _vo = np.asarray(mds.inversion.vel_obs).ravel()
+        _g = ~_flt_s & (_vo > 0)
+        print(f"   grounded RMSE (subdomain): {np.sqrt(np.mean((_v[_g] - _vo[_g])**2)):.2f} m/yr "
+              f"(production run: 94.44 on its subdomain, 70.43 after ssa_inverted_solve)")
+        os.makedirs(os.path.dirname(_out), exist_ok = True)
+        pyissm.model.io.save_model(mds, _out)
+        print(f"-- Saved {_out}")
+    elif os.path.exists(f'{_exe}/{schoof_run}'):
+        raise SystemExit(f'{_exe}/{schoof_run} exists but has not finished -- wait for it, or move it aside with mv -n')
+    else:
+        print(f"-- Submitting the Schoof inversion ({cluster.np} cores, up to {cluster.time / 60:.0f} h); "
+              f"run this step again when it has finished")
+        os.makedirs(_exe, exist_ok = True)
+        pyissm.model.execute.solve(mds, 'Stressbalance', runtime_name = False)
 
 
 ## ------------------------------------

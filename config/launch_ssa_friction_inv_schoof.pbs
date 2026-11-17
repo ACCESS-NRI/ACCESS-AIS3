@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N ssa_fric_schoof
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=01:00:00
+#PBS -l ncpus=4
+#PBS -l mem=96GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o launch_ssa_friction_inv_schoof.pbs.out
+#PBS -e launch_ssa_friction_inv_schoof.pbs.err
+# Schoof friction inversion for the HO track (step ssa_friction_inv_schoof in ais_0.1.py).
+# First run: builds the inversion and submits it (48 cores, ~36 h), then exits.
+# Run again once that job has finished: loads the result and saves it to
+# models/AIS3_ssa_friction_inv_reg_lcurve/schoof_from_budd_cmax2.0/.
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
+export AIS3_STEPS=ssa_friction_inv_schoof
+"$AIS3_PYTHON" -u ais_0.1.py
