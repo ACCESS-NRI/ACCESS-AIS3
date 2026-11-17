@@ -1674,6 +1674,12 @@ if 'ssa_inverted_solve' in steps:
     print(f" ASSEMBLING INVERTED MODEL AND SOLVING STRESS BALANCE"       )
     print("-------------------------------------------------------------")
 
+    # Options for comparing friction fields without touching AIS3_inverted.nc:
+    # AIS3_INVERTED_FRICTION_RUN picks the friction run (default friction_lcurve_run) and
+    # AIS3_INVERTED_TAG is appended to the run name and every output file name.
+    _fric_run = os.environ.get('AIS3_INVERTED_FRICTION_RUN', friction_lcurve_run)
+    _inv_tag = os.environ.get('AIS3_INVERTED_TAG', '')
+
     print(f"-- Loading parameterized model...")
     md = pyissm.model.io.load_model(f'{model_dir}/AIS3_param.nc')
 
@@ -1681,8 +1687,8 @@ if 'ssa_inverted_solve' in steps:
     mdr = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_rheology_floating_inv_lcurve/{rheology_lcurve_run}/{rheology_lcurve_run}.nc')
     md.materials.rheology_B[mdr.mesh.extractedvertices - 1] = mdr.results.StressbalanceSolution.MaterialsRheologyBbar # Note: -1 for zero-based indexing
 
-    print(f"-- Updating friction field from grounded-ice friction L-curve ({friction_lcurve_run})...")
-    mdf = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_friction_inv_reg_lcurve/{friction_lcurve_run}/{friction_lcurve_run}.nc')
+    print(f"-- Updating friction field from grounded-ice friction L-curve ({_fric_run})...")
+    mdf = pyissm.model.io.load_model(f'{model_dir}/AIS3_ssa_friction_inv_reg_lcurve/{_fric_run}/{_fric_run}.nc')
     fric_control, fric_field, _, _ = friction_law_info(md)  # Schoof: FrictionC / C ; Budd: FrictionCoefficient / coefficient
     _fld = getattr(md.friction, fric_field).astype(float)
     _grafted = np.asarray(getattr(mdf.results.StressbalanceSolution, fric_control)).ravel()
@@ -1839,7 +1845,7 @@ if 'ssa_inverted_solve' in steps:
     md.verbose.solution = 1
 
     print(f"-- Assigning cluster and updating settings...")
-    md.miscellaneous.name = 'AIS3_inverted'
+    md.miscellaneous.name = f'AIS3_inverted{_inv_tag}'
     md.cluster = cluster
     # BUGFIX: this step previously set waitonlock=0 (disables blocking-wait) but then called
     # solve() with load_only=True, which never submits a job -- it only loads results from an
@@ -1876,6 +1882,10 @@ if 'ssa_inverted_solve' in steps:
             print(f"\nFORWARD SOLVE DIAGNOSTICS:")
             print(f"   Max modelled velocity: {np.nanmax(vel):.2f} m/yr")
             print(f"   Velocity RMSE vs obs:  {np.sqrt(np.nanmean(residual**2)):.2f} m/yr")
+            _gr = (np.asarray(md.mask.ocean_levelset).ravel() >= 0) & (np.asarray(md.mask.ice_levelset).ravel() < 0) \
+                & (np.asarray(vel_obs).ravel() > 0)
+            _res = np.asarray(residual).ravel()
+            print(f"   Grounded RMSE vs obs:  {np.sqrt(np.nanmean(_res[_gr]**2)):.2f} m/yr")
 
         if plot:
             # BUGFIX: plot_model_field returns (fig, ax, trip) when ax isn't passed in
@@ -1886,10 +1896,13 @@ if 'ssa_inverted_solve' in steps:
                                                    cmap = 'PuOr',
                                                    cbar_kwargs = {'label': 'Modelled velocity (m/a)'})
             ax.set_title('Inverted model - SSA stress balance velocity')
-            plt.savefig(f'{model_dir}/AIS3_inverted_velocity.png')
+            plt.savefig(f'{model_dir}/AIS3_inverted{_inv_tag}_velocity.png')
 
-        print(f"\nSaving inverted model to {model_dir}/AIS3_inverted.nc")
-        pyissm.model.io.save_model(md, f'{model_dir}/AIS3_inverted.nc')
+        _inv_out = f'{model_dir}/AIS3_inverted{_inv_tag}.nc'
+        if _inv_tag and os.path.exists(_inv_out):
+            raise SystemExit(f'{_inv_out} exists -- move it aside with mv -n first')
+        print(f"\nSaving inverted model to {_inv_out}")
+        pyissm.model.io.save_model(md, _inv_out)
 
     else:
         print(f"-- Submitting stress balance solve...")

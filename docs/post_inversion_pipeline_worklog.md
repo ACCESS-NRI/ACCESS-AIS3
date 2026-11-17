@@ -3030,3 +3030,30 @@ AIS3_PROJ_END=2300 (drivers 182423946 / 182423947; logs proj_ho_relaxfix_*_2100-
     2026-11-17 as schoof_from_budd_cmax2.0 in execution_ssa_friction_inv_schoof/; to be
     judged on RMSE after ssa_inverted_solve (production 70.43) and correlation with the
     production field.
+  - Progress check 2026-11-17: by iteration 54 the rebuild's m1qn3 cost was 1.17x production's at
+    the same iteration (1.94e5 vs 1.66e5; production ends at 1.40e5). Scored on today's geometry
+    (one m1qn3 iteration in ssa_friction_inv_schoof's setup, execution_ssa_friction_inv_schoof_diag/),
+    production's final C costs 2.36e5 (velocity term 103: 2.06e5). So the gap is the different
+    surface production was fitted on, not the start: on the geometry the HO track uses, the
+    rebuild already fits better than the production field (103: 1.58e5 vs 2.06e5).
+  - Rebuild finished 2026-11-17 (job 184210576): m1qn3 stopped on dxmin at iteration 136 (genuine
+    convergence; production stopped on its function-call budget). 3 h 56 min, 377 SU, 150 GB.
+    Cost flat at 1.8326e5 from iteration ~79. Saved to
+    models/AIS3_ssa_friction_inv_reg_lcurve/schoof_from_budd_cmax2.0/.
+    Grounded RMSE on the inversion subdomain (Vel vs vel_obs, ocean_levelset >= 0, vel_obs > 0):
+    production on its own geometry 94.3 (fast >100 m/yr 137.0, slow 53.3); production C on
+    today's geometry 124.4 (138.2, 115.1); rebuild 126.1 (142.0, 115.2). So on the same geometry
+    the rebuild matches the production field to ~1% (slightly worse in fast ice; its lower total
+    cost is the log term). Both today-geometry fields have runaway vertices (max ~16,700 m/yr)
+    and double the slow-ice error: a property of today's surface on this subdomain, which
+    ssa_inverted_solve's pins handle. Next: ssa_inverted_solve with this field, written to a new
+    file, against production's 70.43.
+  - ssa_inverted_solve comparison 2026-11-17 (new options AIS3_INVERTED_FRICTION_RUN and
+    AIS3_INVERTED_TAG; outputs models/AIS3_inverted_<tag>.nc, AIS3_inverted.nc untouched). Both
+    on today's code (newB shelf B), 48 cores, ~3 min each. Grounded RMSE (grounded, ice,
+    vel_obs > 0): production field 71.98 (AIS3_inverted_prodC_today.nc); rebuilt field 75.67
+    (AIS3_inverted_schoof_from_budd.nc). All-vertex RMSE 83.10 vs 83.59; max speed 12,350 vs
+    12,273 m/yr. The shipped AIS3_inverted.nc (June shelf B) has 70.43, so the shelf-B change costs
+    the production field ~1.5 m/yr. Both runs pin ~84.7k thin-ice and ~82-83k lower-bound-clamped
+    vertices to observed velocity. Verdict: the step rebuilds the HO Schoof field to within ~5%
+    (3.7 m/yr) of the production fit on identical code.
