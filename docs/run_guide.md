@@ -62,7 +62,7 @@ The scripts select what to run in three different ways:
 
 | script | how the step is selected |
 |---|---|
-| `ais_0.1.py` (HO track + upstream SSA inversion) | `qsub -v AIS3_STEPS=<step>[,<step>] <launcher>` overrides the hard-coded `steps` list. `AIS3_HIST_TAG=<suffix>` renames the historical checkpoint and execution dir. |
+| `ais_0.1.py` (HO track + upstream SSA inversion) | `qsub -v AIS3_STEPS=<step>[,<step>] <launcher>` overrides the hard-coded `steps` list. `AIS3_HIST_TAG=<suffix>` renames the historical checkpoint and execution dir. `AIS3_HIST_FRICTION=budd_nopins` (fresh start only, needs a new tag) swaps in the SSA Budd p=q=1 friction and releases all velocity pins. |
 | `ais_0.1_SSA.py` (SSA track) | Same `AIS3_STEPS` override as `ais_0.1.py`: `qsub -v AIS3_STEPS=<step> launch_ais_0.1_SSA.pbs`. Otherwise edit the `steps` list by hand. |
 | standalone scripts (melt calibration etc.) | Hand-edit the `PHASE = 'submit'/'analyze'` constants (or `ROUND`/`STEP`) at the top of the file before each `qsub`. `ho_stressbalance_tests.py` is the exception: it reads `PHASE` from the environment (`qsub -v PHASE=...`). |
 
@@ -300,6 +300,12 @@ qsub -v AIS3_STEPS=historical_dhdt_tuning,AIS3_HIST_TAG=_relaxfix launch_histori
 - Per chunk: about 13–17 h and 2000–2500 SU, plus hugemem queue waits of up to about 44 h.
   That is why `waitonlock=40 h` and the launcher walltime is 45 h (§4p).
 - The final chunk runs the dH/dt comparison against CPOM.
+- **Pin-free variant:** `launch_historical_budd_nopins.pbs` (tag `_budd_nopins`,
+  `AIS3_HIST_FRICTION=budd_nopins`) replaces the HO Schoof field and its ~176k pinned columns with
+  the SSA track's Budd p=q=1 field and N, with no pins (`use_ssa_budd_friction_no_pins`). The
+  Schoof field cannot run unpinned, and the pins build km-scale thickness spikes during the
+  historical run (worklog §6.21, §6.23, §6.27). Submit the four chunks as an `afterok` chain with
+  per-chunk `-o`/`-e` logs (command in the launcher header). Started 2026-11-18.
 - `launch_historical_chunk1_rerun.pbs` runs chunk 1 only (tag `_chunk1rerun`). It refuses to
   start if that file already exists.
 - **Status:** the `_relaxfix` rerun is **on hold** until the HO too-fast-flow question (§7)

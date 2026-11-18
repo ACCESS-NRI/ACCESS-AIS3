@@ -3057,3 +3057,150 @@ AIS3_PROJ_END=2300 (drivers 182423946 / 182423947; logs proj_ho_relaxfix_*_2100-
     the production field ~1.5 m/yr. Both runs pin ~84.7k thin-ice and ~82-83k lower-bound-clamped
     vertices to observed velocity. Verdict: the step rebuilds the HO Schoof field to within ~5%
     (3.7 m/yr) of the production fit on identical code.
+
+### 6.23 HO initialization: drift vs pins, Budd friction without pins, origin of the thickness spikes (2026-11-17/18)
+- Control drift 2019-2030 (grounded mass change, Gt/yr), split by HO's pinned columns:
+  HO +290, SSA +211. Pinned columns (1.06 Mkm^2): HO +171, SSA +141 -- the same regions drift in
+  SSA, which has no pins. Within 20 km of pins: HO +1, SSA +18. Elsewhere, ice < 10 m/yr
+  (6.21 Mkm^2): HO +123, SSA +69 (most of HO's extra +79); faster ice: HO -5, SSA -17.
+  Away from pins HO basal/surface speed median 0.97; HO/SSA surface speed 1.22 (1-10 m/yr),
+  0.99 (10-50), 0.89 (50-200), 0.85 (> 200).
+- `check_ho_budd_unpin.py` (job 184316875; inner solves 437 + 447 SU, driver 441 SU): HO 2019 state
+  with the SSA track's Budd p=q=1 field and N (models/AIS3_proj_ssa_init.nc), all pins released.
+  B2 = SSA field as is (46,556 HO-grounded vertices have C = 0); B2f = those filled from the nearest
+  grounded C > 0. Output models/ho_budd_unpin_test.npz.
+  - B2 max 3.8e5 m/yr (Schoof U1 7.0e5), 207 vertices > 10 km/yr (U1 265). Same fastest vertices.
+  - Never-pinned grounded ice is fine: speed/obs median 0.97, HO-Budd/SSA median 1.12 (1-10 m/yr),
+    1.08, 1.02, 0.97 (> 200). Formerly pinned grounded: speed/SSA median 1.02.
+  - 2,373 grounded vertices > 3x SSA and > 1 km/yr, in 108 clusters, 80% on pinned columns.
+    Grounded RMSE vs obs excluding them: never pinned 124 (SSA 84, HO production U0 83),
+    formerly pinned 152 (SSA 89).
+  - B2f is worse (never-pinned RMSE 198; fast ice slowed, C = 0 spots median 0.35x obs). The C = 0
+    spots are not a problem in B2 (median 1.06x obs). Drop the fill.
+- The blow-ups are geometry, not friction. At every large cluster the HO 2019 surface is
+  400-2,800 m above SSA's: e.g. Peninsula (-2328, 1051) km H 3,230 m vs 470 m (surface 4,082 vs
+  1,322 m); (-608, 304) H 3,670 vs 2,264. Grounded |dS(HO - SSA)| > 300 m: 1,115 vertices, ~1,000 km^2,
+  97% pinned; > 1000 m: 33 vertices, all pinned.
+- The spikes grow during the HO historical run, not in the inversion or relaxation: (-2328, 1051)
+  inverted 100 m (floor), relaxed 97, 1995 105, 2001 1,087, 2007 1,901, 2013 2,583, 2019 3,230
+  (~130 m/yr). |dH| > 300 m: 342 vertices in the relaxation, 3,853 in 1995-2019. This is the 6.20
+  pinned-column runaway, already under way before 2019: a pinned column cannot speed up as it
+  thickens. The pins added for the inversion's thin-ice / lower-bound speeds build the spikes that
+  then need the pins.
+- So the HO 2019 state cannot be unpinned with any friction field; the test has to be made before
+  the spikes form (the 1995 relaxed state), with both the Schoof and the Budd field.
+
+### 6.24 Melt sensitivity: how much do the shelves buttress the SSA initial state? (2026-11-18)
+Question: LARMIP shelves thin almost completely but grounded ice barely speeds up (6.14). Ruled
+out first: the friction inversion used the same inverted shelf B as the projections; GL mesh
+median 1.33 km (p10 0.66, p90 2.66); no friction spike at the GL (C median 128 within 5 km,
+118-147 inland). Prescribed N within 5 km of the GL is 1.23x flotation N (does not go to 0).
+Initial fast ice within 20 km of the GL runs 8-15% below obs (fits the positive control drift).
+Inverted shelf B / temperature-based B (AIS3_param.nc) on floating ice: median 0.66, p10 0.37.
+
+`check_shelf_removal.py` (job 184450907, 13 SU + six 48-cpu solves of ~3 min). Stress balance only
+on AIS3_proj_ssa_init.nc: S0 as is; T0 temperature shelf B; X1 all floating ice removed (front at
+the GL, unanchored pieces removed as in apply_collapse); P0 / PT0 / P1 the same with coupledN_p3
+friction. Output models/shelf_removal_test.npz. Grounded RMSE vs obs: S0 85.2, T0 91.7, P0 85.3,
+PT0 94.6 m/yr.
+- 3,122 grounded vertices (median 0.9 km from the GL) run > 10x faster with the front at the GL
+  (max 3.8e8 m/yr): the cut GL elements. Excluded below (ratios capped at 10 / medians).
+- Speed-up from removing every shelf, grounded ice > 100 m/yr, median (flux-weighted, capped):
+
+| sector | 0-5 km X1/S0 | 5-20 km | 20-50 km | 0-5 km X1/T0 | 0-5 km P1/P0 |
+|---|---|---|---|---|---|
+| Weddell | 1.84 (4.04) | 1.30 (1.84) | 1.03 (1.30) | 2.13 | 2.48 |
+| East Antarctica | 1.04 (2.68) | 1.01 (1.13) | 1.00 (1.01) | 1.04 | 1.10 |
+| Ross | 2.32 (3.53) | 1.72 (2.24) | 1.29 (1.64) | 3.02 | 2.82 |
+| Amundsen | 1.09 (1.49) | 1.02 (1.10) | 1.00 (1.01) | 1.11 | 1.20 |
+| Peninsula | 1.11 (1.49) | 1.00 (1.04) | 1.00 (1.00) | 1.13 | 1.23 |
+
+- Temperature-based shelf B adds only 10-30% to the speed-up (most in Ross). Soft inverted
+  shelves are a minor factor, not the main one.
+- Basal drag / driving stress (tau_b = C^2 N u vs rho g H |grad s|), S0, fast trunks
+  (> 1000 m/yr) within 20 km of the GL: Amundsen 0.32 (n 8,096; speed-up 1.08, p3 1.17), EAIS 0.05
+  (1.12), Ross 0.00 (n 61; 4.0), Peninsula 0.02 (1.00).
+- So Amundsen's trunks are not drag-held (drag carries a third of the driving stress) and still
+  barely respond to losing their shelves, stiff or soft. The rest of the resistance must be carried
+  inside the grounded ice, most plausibly by the shear margins: grounded B is the temperature-based
+  B (inverted/param = 1.00 on 97% of grounded vertices), so the margins are not softened by damage,
+  shear heating or fabric, and the friction inversion lowers trunk drag to compensate. A
+  margin-held trunk is insensitive to buttressing loss and to thinning near the GL.
+- Next test (not run): invert grounded B together with friction in one sector (Amundsen), then
+  repeat this shelf-removal test there.
+
+### 6.25 Amundsen joint friction + grounded-B inversion: B does not move (2026-11-18)
+`check_amundsen_joint_inv.py` (6.24 follow-up), Amundsen subdomain (LARMIP-3 sector 4) of the SSA
+2019 state, 281,654 vertices; sector cuts Dirichlet obs, floating margin Neumann, grounded margin
+Dirichlet obs. Run dirs execution_SSA/AIS3_amujoint_*.
+- J0 (friction only, production settings, warm start): 39 iterations, stopped on dxmin; cost
+  79,173 -> 66,124 (184455778, 4 min, 6.7 SU). Usable reference.
+- J1 (C + grounded B, control_scaling_factors [1, 1e6], B free on all grounded ice): stopped on
+  dxmin after 3 iterations, cost rising 79,287 -> 79,292. Gradient norm 4.43e6 vs C's 3. 79% of
+  |G_B|^2 is in ice < 50 m/yr. Per vertex the raw B gradient is ~4e5 (fast ice) to ~2e6 (slow ice)
+  times the C gradient, i.e. B*dJ/dB ~ 1e6 x C*dJ/dC. On floating ice, in the shelf inversion,
+  the B gradient norm is 2.45e-7 (scaling 1).
+- J1b (scaling [1, 1], B free only where obs > 50 m/yr, 181,886 vertices; 184463909, 3.5 min,
+  6 SU): 36 iterations, stopped on dxmin at cost 70,405 (worse than J0). The cf502 term stays at
+  70.16 throughout; max |dB|/B0 1.3e-5, median 9e-9. B does not move.
+- For one control, m1qn3's first step is independent of the scaling, so this is not a scaling
+  choice. Taken at face value, the grounded-ice B gradient says a change of a few Pa s^(1/3)
+  (1e-8 relative) would remove the whole cost, and the tiny steps J1 took raised the cost. So
+  ISSM's MaterialsRheologyBbar gradient on grounded SSA ice looks wrong in this build (size, and
+  possibly sign); it behaves on floating ice. Not confirmed with a finite-difference check.
+- The driver (184463045) was stopped by hand just after J1b ended; no forward solves ran. Logs of
+  the first driver kept as launch_check_amundsen_joint_inv.pbs.{out,err}.failed_load_20261118.
+
+### 6.26 Softened shear margins do not make Amundsen sensitive (2026-11-18)
+`check_amundsen_soft_margins.py` (job 184465808, 3.6 SU driver + 2 inversions and 6 forward solves of
+a few minutes; output models/amundsen_soft_margins_test.npz). Same Amundsen subdomain and J0
+settings as 6.25. Margins: grounded, obs > 20 m/yr, flow-frame shear strain rate of the observed
+velocity > 0.01/yr and > the along-flow strain rate (45,609 vertices, 27,495 km^2, 4.0% of the grounded
+area, obs median 294 m/yr). Plain effective strain rate was not usable: the trunks stretch along
+flow at a median 0.07/yr. B x 0.7 (M70) or x 0.5 (M50) there, friction re-inverted as J0.
+
+| case | final cost | grounded RMSE | margins | obs > 1000 m/yr | trunk drag/driving | shelf removal: 0-5 km median (flux-wt) | trunks |
+|---|---|---|---|---|---|---|---|
+| J0 | 66,124 | 99.4 | 172.3 | 333.0 | 0.35 | 1.11 (1.41) | 1.07 |
+| M70 | 66,058 | 125.1 | 224.3 | 450.0 | 0.42 | 1.12 (1.51) | 1.07 |
+| M50 | 68,403 | 195.9 | 376.9 | 723.3 | 0.35 | 1.13 (1.68) | 1.09 |
+
+- Softening the margins 2.9x-8x barely changes the response to losing every shelf (trunks 1.07 ->
+  1.09; 5-20 km 1.02 in all three) and worsens the fit sharply; re-inverted friction does not
+  compensate. Stiff margins are not why Amundsen is insensitive.
+- With 6.24: the immediate Amundsen response to shelf loss is small whatever the shelf B, margin
+  B or friction exponent (p3 1.17). The LARMIP gap there has to come from the transient: thinning
+  and grounding-line retreat, where coupledN_p3 (x2.0-2.6) and melt on partly floating elements
+  (SEM1, x1.35) are the factors found so far.
+
+### 6.27 HO without pins on the 1995 state: Budd works, Schoof does not (2026-11-18)
+`check_ho_unpin_1995.py` (driver 184442665, 253 SU, + two 96-cpu hugemem solves). State:
+models/AIS3_ho_relaxed.nc (the historical run's start), loaded as historical_dhdt_tuning does.
+HO 1995 surface vs SSA: |dS| > 300 m at 291 vertices, max 601 m (no km-scale spikes yet, cf. 6.23).
+All pins released. First attempt (184412401) failed on my own assertion that Schoof C is constant up
+the columns: layers 1-14 hold a different C on ~1.46M columns (only the base layer is used).
+- B95, SSA's Budd p=q=1 field and N: max 5,489 m/yr, 0 vertices > 10 km/yr; 7 grounded vertices
+  > 3x SSA and > 1 km/yr. Fastest at (-838, 985) km, a C = 0 grounded patch (obs ~1,200, SSA ~1,930).
+  Never-pinned grounded: speed/obs median 0.98, RMSE 100.9 (SSA 79.8). Formerly pinned grounded:
+  speed/obs median 0.69, RMSE 143.8 (SSA 89.6). B95/SSA by SSA speed: 1.17 (1-10 m/yr), 1.14, 1.02,
+  0.96 (> 200).
+- S95, HO Schoof field: max 2.1e8 m/yr at (-2271, 944) km (Peninsula, H 23 m); 5,147 grounded
+  vertices > 3x SSA (2,441 on pinned columns, 142 with H <= 150 m); never-pinned 1-10 m/yr ice runs
+  1.64x SSA.
+- So the Schoof field needs the pins from the start; the Budd field does not. A pin-free HO track
+  is possible with the SSA friction: rerun the HO historical 1995-2019 from AIS3_ho_relaxed.nc with
+  the Budd field and no pins, then re-initialize the projections. Expected costs: fit is worse than
+  SSA (RMSE 101 vs 80), and formerly pinned regions start ~30% too slow.
+
+### 6.28 Pin-free HO historical run started (2026-11-18)
+- New option `AIS3_HIST_FRICTION=budd_nopins` in historical_dhdt_tuning (fresh start only; needs a
+  new `AIS3_HIST_TAG`): `use_ssa_budd_friction_no_pins` copies the SSA Budd p=q=1 coefficient and N
+  (models/AIS3_proj_ssa_init.nc, coupling 3, limit 0.07) up every column and sets every
+  spcvx/spcvy/spcvz to NaN. On resume the checkpoint is checked for default friction and no pins.
+- `config/launch_historical_budd_nopins.pbs` (tag `_budd_nopins`; driver 24 cpu / 720 GB instead of
+  48 / 1450 GB, which used at most 382 GB). Chain: 184510702 -> 184510703 -> 184510705 -> 184510706
+  (afterok), logs launch_historical_budd_nopins_chunk{1-4}.pbs.{out,err}.
+- Expected per chunk: solve ~6.5 h / ~1,950 SU (relaxfix chunk 1), driver ~10.5 h / ~750 SU; ~11k SU
+  for the four chunks, plus hugemem queue waits.
+- Then: compare with the relaxfix run and CPOM dH/dt; if usable, start HO projections from it
+  (AIS3_PROJ_HIST_TAG=_budd_nopins).
