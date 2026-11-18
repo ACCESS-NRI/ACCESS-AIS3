@@ -67,6 +67,48 @@ def sync_mesh_z(md):
     md.mesh.z = (base[None, :] + sigma * thick[None, :]).ravel()
 
 
+def use_ssa_budd_friction_no_pins(md):
+    """Swap the HO model's Schoof friction and velocity pins for the SSA track's friction.
+
+    The HO Schoof field cannot run without its ~176k pinned columns (spcvx/spcvy = observed
+    velocity): released on the 1995 state it reaches 2e8 m/yr, and the pinned columns themselves
+    thicken by up to ~3 km over the historical run (worklog 6.21, 6.23). The SSA track's Budd p=q=1
+    field (coefficient and Ehrenfeucht N, coupling 3, limit 0.07) runs pin-free on the same 1995
+    state, max 5.5 km/yr (worklog 6.27). Copied up every column from models/AIS3_proj_ssa_init.nc,
+    whose 2D mesh is the HO base layer (checked).
+    """
+    import netCDF4
+    nv = md.mesh.numberofvertices
+    nvb = int(md.mesh.numberofvertices2d)
+    nl = nv // nvb
+    s = netCDF4.Dataset(f'{model_dir}/AIS3_proj_ssa_init.nc')
+    assert np.allclose(np.asarray(s['mesh'].variables['x'][:]), np.asarray(md.mesh.x)[:nvb])
+    assert np.allclose(np.asarray(s['mesh'].variables['y'][:]), np.asarray(md.mesh.y)[:nvb])
+    sf = s['friction']
+    assert sf.getncattr('classtype') == 'friction.default' and int(sf.getncattr('coupling')) == 3
+    assert np.all(np.asarray(sf.variables['p'][:]) == 1) and np.all(np.asarray(sf.variables['q'][:]) == 1)
+    C2 = np.asarray(sf.variables['coefficient'][:], dtype=float).ravel()
+    N2 = np.asarray(sf.variables['effective_pressure'][:], dtype=float).ravel()
+    lim = float(sf.getncattr('effective_pressure_limit'))
+    s.close()
+    print(f"-- Friction: {type(md.friction).__name__} -> SSA Budd p=q=1 (coupling 3, limit {lim}); "
+          f"grounded C median {np.median(C2[(np.asarray(md.mask.ocean_levelset).ravel()[:nvb] > 0)]):.0f}")
+    md.friction = pyissm.model.classes.friction.default()
+    md.friction.coefficient = np.tile(C2, nl)
+    md.friction.p = np.ones(md.mesh.numberofelements)
+    md.friction.q = np.ones(md.mesh.numberofelements)
+    md.friction.coupling = 3
+    md.friction.linearize = 0
+    md.friction.effective_pressure = np.tile(N2, nl)
+    md.friction.effective_pressure_limit = lim
+    pinned = np.isfinite(np.asarray(md.stressbalance.spcvx, dtype=float).ravel())
+    print(f"-- Releasing all velocity pins: {int(pinned.sum())} vertices "
+          f"({int(pinned[:nvb].sum())} columns)")
+    md.stressbalance.spcvx = np.full(nv, np.nan)
+    md.stressbalance.spcvy = np.full(nv, np.nan)
+    md.stressbalance.spcvz = np.full(nv, np.nan)
+
+
 def adopt_final_state(md):
     """Make the transient's last step the model's own state before save_model.
 
@@ -337,6 +379,14 @@ if os.environ.get('AIS3_STEPS'):
 # Suffix for historical_dhdt_tuning's checkpoint file and execution name, so a rerun
 # (e.g. AIS3_HIST_TAG=_chunk1rerun) cannot overwrite the finished AIS3_historical_1995_2019.nc.
 HIST_TAG = os.environ.get('AIS3_HIST_TAG', '')
+# Friction for a FRESH historical start (ignored on resume: the checkpoint carries it).
+#   ''            the HO Schoof field and its ~176k pinned columns, as in AIS3_ho_relaxed.nc
+#   'budd_nopins' the SSA track's Budd p=q=1 field and no pins (use_ssa_budd_friction_no_pins;
+#                 worklog 6.27). Needs its own AIS3_HIST_TAG.
+HIST_FRICTION = os.environ.get('AIS3_HIST_FRICTION', '')
+assert HIST_FRICTION in ('', 'budd_nopins'), HIST_FRICTION
+assert not HIST_FRICTION or HIST_TAG not in ('', '_relaxfix', '_chunk1rerun'), \
+    'AIS3_HIST_FRICTION needs a new AIS3_HIST_TAG'
 # steps = ['ssa_friction_inv_lcurve']
 # steps = ['ssa_friction_inv_sensit']
 
@@ -2766,6 +2816,9 @@ if 'historical_dhdt_tuning' in steps:
         md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
         current_time = float(md.timestepping.final_time)
         print(f"   Checkpoint completed through t={current_time} (of {FULL_END_TIME})")
+        if HIST_FRICTION == 'budd_nopins':
+            assert type(md.friction).__name__ == 'default', f'checkpoint friction {type(md.friction).__name__}'
+            assert not np.isfinite(np.asarray(md.stressbalance.spcvx, dtype=float)).any(), 'checkpoint has pins'
 
         # Carry the last chunk's final geometry/grounding-line state forward as this chunk's
         # initial condition. ice_levelset is left untouched (calving isn't modelled here --
@@ -2826,6 +2879,8 @@ if 'historical_dhdt_tuning' in steps:
         # in md.geometry (adopt_final_state, 4z), so drop it before marshalling.
         md.results.TransientSolution = []
         current_time = FULL_START_TIME
+        if HIST_FRICTION == 'budd_nopins':
+            use_ssa_budd_friction_no_pins(md)
 
     chunk_final_time = min(current_time + CHUNK_YEARS, FULL_END_TIME)
     print(f"-- This chunk: t={current_time} -> t={chunk_final_time}")
