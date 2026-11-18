@@ -2958,8 +2958,9 @@ if 'historical_dhdt_tuning' in steps:
     # Per-CHUNK budget, not the full run -- see the chunking note above. ~9h observed for a
     # 6-year/60-timestep chunk at this rate; 14h leaves real margin under the 24h/96-cpu cap
     # (which is a hard NCI project ceiling, confirmed via direct qsub probe -- cannot be
-    # raised by requesting more walltime here).
-    md.cluster.time = 60 * 14
+    # raised by requesting more walltime here). Raised 14h -> 20h (2026-11-19): the pin-free
+    # run (AIS3_HIST_FRICTION=budd_nopins) solves ~12.5 min/step, ~12.5h per chunk (worklog 6.28).
+    md.cluster.time = 60 * 20
     # BUGFIX (2026-09-02, same pattern as ho_relaxation just above): waitonlock=0 +
     # load_only=True in the "if save" branch never actually submits -- fixed to the single
     # synchronous submit-and-wait call used everywhere else in this pipeline.
