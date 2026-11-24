@@ -3204,3 +3204,6 @@ the columns: layers 1-14 hold a different C on ~1.46M columns (only the base lay
   for the four chunks, plus hugemem queue waits.
 - Then: compare with the relaxfix run and CPOM dH/dt; if usable, start HO projections from it
   (AIS3_PROJ_HIST_TAG=_budd_nopins).
+- 2026-11-19: chunk 1 solve (184526288) runs ~12.5 min/step (relaxfix: ~6.5 min), so ~12.5 h of its
+  14 h limit. historical_dhdt_tuning's md.cluster.time raised to 20 h (under the 24 h 96-cpu hugemem
+  cap and the 40 h waitonlock); chunks 2-4 pick it up when they start.
