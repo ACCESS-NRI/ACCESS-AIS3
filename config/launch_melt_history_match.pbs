@@ -1,0 +1,18 @@
+#!/bin/bash
+# Driver for melt_history_match.py: dense-gamma_0 history-matching calibration of the ismip6 local melt
+# law against ISMIP7 J1-J4 (Python melt formula, no ISSM solves).
+#PBS -N melt_hm
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=03:00:00
+#PBS -l ncpus=4
+#PBS -l mem=48GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o launch_melt_history_match.pbs.out
+#PBS -e launch_melt_history_match.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
+"$AIS3_PYTHON" -u melt_history_match.py

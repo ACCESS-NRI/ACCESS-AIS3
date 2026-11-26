@@ -1,0 +1,45 @@
+#!/bin/bash
+# Build the SEM1-patched ISSM used by AIS3_SSA_CALIB=_hm<g>sem1 (docs/projection_experiments.md, v2 stage C;
+# worklog 6.35). It is the production build (ACCESS-NRI spack issm-git.2026.05.18, commit 40c764c7) with one change:
+# Element::Ismip6FloatingiceMeltingRate skips only fully grounded elements instead of all but fully floating ones,
+# so SubelementMelt1 can melt partly floating elements.
+#
+# Source: git archive of 40c764c7 in /g/data/au88/jh7060/ISSM-40c764c7-sem1 (original Element.cpp kept as
+# Element.cpp.orig_40c764c7). The build replays the production spack build exactly: its recorded build environment
+# (compiler wrappers, flags, dependency paths) and configure arguments, with the install prefix swapped in
+# SPACK_STORE_RPATH_DIRS so issm.exe's RPATH (which beats LD_LIBRARY_PATH from the access-issm_ad module the inner jobs
+# load) points at this build's lib/, not production's. Use it with -v AIS3_ISSM_DIR=<prefix>.
+#PBS -N build_issm_sem1
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=04:00:00
+#PBS -l ncpus=16
+#PBS -l mem=64GB
+#PBS -l jobfs=20GB
+#PBS -l storage=gdata/au88+gdata/vk83
+#PBS -l wd
+set -eo pipefail
+PROD=/g/data/vk83/apps/spack/1.1/release/linux-x86_64/issm-git.2026.05.18_2026.05.18-kgta35igm37z4qnqnul7rcmgx2inftqd
+SRC=/g/data/au88/jh7060/ISSM-40c764c7-sem1
+PREFIX=$SRC/install
+[ -e "$PREFIX/bin/issm.exe" ] && { echo "$PREFIX/bin/issm.exe exists: archive the old build first" >&2; exit 1; }
+grep -q "AIS3 SEM1 patch" "$SRC/src/c/classes/Elements/Element.cpp" || { echo "patch missing in $SRC" >&2; exit 1; }
+
+ENVF=$PBS_JOBFS/spack-build-env.sh
+sed "s#$PROD#$PREFIX#g" "$PROD/.spack/spack-build-env.txt" > "$ENVF"
+echo "rewritten lines: $(diff <(cat "$PROD/.spack/spack-build-env.txt") "$ENVF" | grep -c '^>')"
+set +u; source "$ENVF"
+export ISSM_DIR=$SRC
+cd "$SRC"
+echo "== autoreconf $(date)"; autoreconf --install --force > build_autoreconf.log 2>&1
+echo "== configure $(date)"
+./configure --prefix="$PREFIX" $(cat "$PROD/.spack/spack-configure-args.txt") > build_configure.log 2>&1
+echo "== make $(date)"; make -j 16 > build_make.log 2>&1
+echo "== make install $(date)"; make install > build_install.log 2>&1
+cat > "$PREFIX/SEM1_PATCH" <<EOF
+ISSM commit 40c764c7 (= production spack issm-git.2026.05.18) + AIS3 SEM1 patch, built $(date -I) by config/build_issm_sem1.pbs.
+Element::Ismip6FloatingiceMeltingRate: "!this->IsAllFloating()" -> "this->IsAllGrounded()" (melt on partly floating elements).
+EOF
+echo "== RPATH of issm.exe:"; readelf -d "$PREFIX/bin/issm.exe" | grep -E "RPATH|RUNPATH" | tr ':' '\n' | head -3
+echo "== libISSMCore resolves to:"; LD_LIBRARY_PATH=$PROD/lib ldd "$PREFIX/bin/issm.exe" | grep ISSMCore
+echo "== done $(date)"
