@@ -1,0 +1,21 @@
+#!/bin/bash
+# Driver for check_shelf_removal_plastic.py: four SSA stress-balance solves on the 2019 SSA
+# state (Budd p=5 and Schoof law, both with flotation N; shelves as is / removed),
+# submitted as 48-cpu inner jobs, then per-sector speed ratios.
+#PBS -N shelfrm_plastic
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=07:00:00
+#PBS -l ncpus=4
+#PBS -l mem=96GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o launch_check_shelf_removal_plastic.pbs.out
+#PBS -e launch_check_shelf_removal_plastic.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
+"$AIS3_PYTHON" -u check_shelf_removal_plastic.py

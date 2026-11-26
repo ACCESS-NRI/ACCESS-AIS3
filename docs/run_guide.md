@@ -62,8 +62,8 @@ The scripts select what to run in three different ways:
 
 | script | how the step is selected |
 |---|---|
-| `ais_0.1.py` (HO track + upstream SSA inversion) | `qsub -v AIS3_STEPS=<step>[,<step>] <launcher>` overrides the hard-coded `steps` list. `AIS3_HIST_TAG=<suffix>` renames the historical checkpoint and execution dir. `AIS3_HIST_FRICTION=budd_nopins` (fresh start only, needs a new tag) swaps in the SSA Budd p=q=1 friction and releases all velocity pins. |
-| `ais_0.1_SSA.py` (SSA track) | Same `AIS3_STEPS` override as `ais_0.1.py`: `qsub -v AIS3_STEPS=<step> launch_ais_0.1_SSA.pbs`. Otherwise edit the `steps` list by hand. |
+| `ais_0.1.py` (HO track + upstream SSA inversion) | `qsub -v AIS3_STEPS=<step>[,<step>] <launcher>` overrides the hard-coded `steps` list. `AIS3_HIST_TAG=<suffix>` renames the historical checkpoint and execution dir. `AIS3_HIST_FRICTION=budd_nopins` (fresh start only, needs a new tag) swaps in the SSA Budd p=q=1 friction and releases all velocity pins. With it, `AIS3_HIST_FRICTION_C=<npz>:<key>` replaces that friction coefficient (e.g. the `ho_friction_fixedpoint.py` result) and `AIS3_HIST_MELT=hm<gamma_0>` takes gamma_0 and deltaT from `models/melt_calibration_hm_ho.json`. |
+| `ais_0.1_SSA.py` (SSA track) | Same `AIS3_STEPS` override as `ais_0.1.py`: `qsub -v AIS3_STEPS=<step> launch_ais_0.1_SSA.pbs`. Otherwise edit the `steps` list by hand. Variants, each tagging every file it writes: `AIS3_SSA_CALIB=_hm<gamma_0>` (history-matched melt, whole chain), `AIS3_SSA_FRICTION=p1_flotN/p3_fixedN/p3_flotN/p5_flotN`, `AIS3_SSA_OCEAN=main/cold/warm/vary` (OCX pathways) and `AIS3_SSA_FRONT=greene` (observed front) for the historical run. `AIS3_HIST_SUBMIT_ONLY=1` then `AIS3_HIST_LOAD_ONLY=1` splits a historical run so the big-memory driver does not sit idle (worklog 6.32). |
 | standalone scripts (melt calibration etc.) | Hand-edit the `PHASE = 'submit'/'analyze'` constants (or `ROUND`/`STEP`) at the top of the file before each `qsub`. `ho_stressbalance_tests.py` is the exception: it reads `PHASE` from the environment (`qsub -v PHASE=...`). |
 
 **Always use `AIS3_STEPS` for `ais_0.1.py`.** Don't edit the shared `steps` list while a job
@@ -306,6 +306,9 @@ qsub -v AIS3_STEPS=historical_dhdt_tuning,AIS3_HIST_TAG=_relaxfix launch_histori
   Schoof field cannot run unpinned, and the pins build km-scale thickness spikes during the
   historical run (worklog §6.21, §6.23, §6.27). Submit the four chunks as an `afterok` chain with
   per-chunk `-o`/`-e` logs (command in the launcher header). Started 2026-11-18.
+- **Refined friction and gamma_0 = 4000:** `launch_historical_budd_nopins_hm4000.pbs` (tag
+  `_budd_nopins_hm4000`) adds `AIS3_HIST_FRICTION_C=models/ho_friction_fixedpoint_cont.npz:C7` and
+  `AIS3_HIST_MELT=hm4000` (worklog §6.38, §6.42). Started 2026-11-24.
 - `launch_historical_chunk1_rerun.pbs` runs chunk 1 only (tag `_chunk1rerun`). It refuses to
   start if that file already exists.
 - **Status:** the `_relaxfix` rerun is **on hold** until the HO too-fast-flow question (§7)

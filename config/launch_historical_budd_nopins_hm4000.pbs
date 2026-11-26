@@ -1,0 +1,30 @@
+#!/bin/bash
+# Pin-free HO historical with refined friction and gamma_0 = 4000 melt (worklog 6.42): SSA Budd field with
+# ho_friction_fixedpoint_cont.npz C7 in the formerly pinned regions, HO hm4000 melt, no pins. Fresh start from
+# models/AIS3_ho_relaxed.nc; writes NEW files: models/AIS3_historical_1995_2019_budd_nopins_hm4000.nc
+# (checkpoint), ..._budd_nopins_hm4000_history_<t0>-<t1>.npz, execution/AIS3_historical_1995_2019_budd_nopins_hm4000.
+# One submission per 6-yr chunk (4 chunks); each resumes from the checkpoint. Submit the chain with
+# per-chunk logs, e.g.
+#   j1=$(qsub -o launch_historical_budd_nopins_hm4000_chunk1.pbs.out -e launch_historical_budd_nopins_hm4000_chunk1.pbs.err launch_historical_budd_nopins_hm4000.pbs)
+#   j2=$(qsub -W depend=afterok:$j1 -o ..._chunk2.pbs.out -e ..._chunk2.pbs.err launch_historical_budd_nopins_hm4000.pbs)  ...
+# Driver resources: 24 cpu / 720 GB (the 48 cpu / 1450 GB of launch_historical_relaxfix.pbs used
+# at most 382 GB); the solve itself is a 96-cpu hugemem inner job.
+#PBS -N hist_hobh4
+#PBS -P au88
+#PBS -q hugemem
+#PBS -l walltime=45:00:00
+#PBS -l ncpus=24
+#PBS -l mem=720GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -v AIS3_STEPS=historical_dhdt_tuning,AIS3_HIST_TAG=_budd_nopins_hm4000,AIS3_HIST_FRICTION=budd_nopins,AIS3_HIST_FRICTION_C=/g/data/au88/jh7060/ACCESS-AIS3/models/ho_friction_fixedpoint_cont.npz:C7,AIS3_HIST_MELT=hm4000
+#PBS -o launch_historical_budd_nopins_hm4000.pbs.out
+#PBS -e launch_historical_budd_nopins_hm4000.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
+echo "AIS3_STEPS=$AIS3_STEPS AIS3_HIST_TAG=$AIS3_HIST_TAG AIS3_HIST_FRICTION=$AIS3_HIST_FRICTION"
+"$AIS3_PYTHON" -u ais_0.1.py

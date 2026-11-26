@@ -1,0 +1,20 @@
+#!/bin/bash
+# Driver for check_ho_shelf_removal.py: shelf-removal test on the pin-free HO 1995 state (refined friction),
+# one 96-cpu hugemem stress-balance solve, compared with the SSA test on the same mesh.
+#PBS -N ho_shelfrm
+#PBS -P au88
+#PBS -q hugemem
+#PBS -l walltime=40:00:00
+#PBS -l ncpus=24
+#PBS -l mem=720GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o launch_check_ho_shelf_removal.pbs.out
+#PBS -e launch_check_ho_shelf_removal.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+# Run in <repo>/config with the settings in site.env (submit from config/ or the repo root,
+# or pass -v AIS3_ROOT=<repo>)
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
+"$AIS3_PYTHON" -u check_ho_shelf_removal.py

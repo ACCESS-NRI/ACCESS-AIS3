@@ -2856,6 +2856,27 @@ completed, exit 0. Amundsen 8 m/yr step, exp - ctrl, ISSM VAF, mm SLE:
     collapse results are used.
   - Not yet verified from the 2213 geometry (no ice_levelset in the history files).
 
+**6.12 collapse: shelves go from the grounding line outward (2026-11-19).** Seen in the animation
+(`config/animate_ssa_projection.py` -> docs/figures/anim_ssa_ssp585_cesm2_ref_ref_collapse.mp4).
+- The CESM2 ssp585 v2.1 mask flags inner shelves first. Ross: in 2150 it covers the inner shelf off
+  the Siple Coast but not the outer shelf, and the run opens a hole there at the grounding line
+  while the outer shelf stays, held by lateral contact. That outer remnant is the piece dropped as
+  unanchored in 2214.
+- apply_collapse removes all masked floating ice up to the grounding line. Ice that ungrounds
+  inside the mask goes at the next mask change, so in masked areas the ice front follows the
+  retreating grounding line inland. By 2300 there is open ocean upstream of the 2019 grounding line
+  on the Siple Coast.
+- `config/check_anim_ice_mask.py` (job 184581313) confirms the animation shows the model's ice
+  extent. Of 523,156 vertices ever removed, at most ~1,000 hold grounded ice > 2 m in any decade;
+  these are ice-free vertices of front elements, where ISSM keeps a thickness. Removed ice >2 m
+  (mostly floating), the same front-element effect: 37 vertices (2030) to 20k (2190), 14k (2300).
+- The reverse also holds: vertices still inside the ice domain at min_thickness (1 m) grow from
+  ~800 (2020) to 100,727 (2300), 86,476 of them grounded. Presumably surface-melt stripping after
+  ~2200, not checked. The animation still draws these as ice.
+- So in collapse results the holes at the grounding line are imposed by the mask and the
+  remove-all-masked-floating-ice rule; they are not a dynamic grounding-line failure. State this
+  wherever the collapse run is shown.
+
 ### 6.19 HO projections extended to 2300 (2026-10-28)
 
 User decision. ho ctrl and ho ssp585_cesm2_ref_ref resume from their 2100 checkpoints with
@@ -3207,3 +3228,575 @@ the columns: layers 1-14 hold a different C on ~1.46M columns (only the base lay
 - 2026-11-19: chunk 1 solve (184526288) runs ~12.5 min/step (relaxfix: ~6.5 min), so ~12.5 h of its
   14 h limit. historical_dhdt_tuning's md.cluster.time raised to 20 h (under the 24 h 96-cpu hugemem
   cap and the 40 h waitonlock); chunks 2-4 pick it up when they start.
+- 2026-11-19, chunk 1 (1995-2001) done: driver 184510702 16h24m, 1,181 SU; solve 184526288 12h25m,
+  3,577 SU (~4,760 SU per chunk, so ~19k SU for the run, not ~11k). Chunk 2 (184510703) running.
+  Against the pinned relaxfix run over the same years (base-layer history files):
+  - |dH| > 300 m by 2001: 589 vertices, 6% grounded, 19% on former pin columns (relaxfix: 428, 35%
+    grounded, 49% pinned). The largest pin-free changes are on floating ice (Amundsen shelf around
+    (-1548, -457) km +458 m; EAIS shelves), which the pinned run has too.
+  - Spike sites, dH 1995-2001 pinned / pin-free: Peninsula (-2328, 1051) +989 / +167 m;
+    (-2392, 1157) +454 / +168; (-608, 304) +454 / -238; (2192, -1204) +270 / +26; (-1179, -1049)
+    +477 / -87; (-443, -532) +831 / -181. The grounded runaway is gone except on thin Peninsula
+    ice (H 40-100 m in 1995), which still thickens ~28 m/yr. Watch it in chunks 2-4.
+  - Whole-domain grounded mass change (mean since 1995) +389 Gt/yr pin-free vs +419 pinned;
+    SLE by 2001 -4.5 vs -5.0 mm.
+
+### 6.29 Melt calibration re-scored with the real J2 target and J4: gamma_0=300 does not survive (2026-11-19)
+- Finding: the J2 that picked gamma_0=300 (4c/4k; J1 is ~0 by construction once deltaT is refit) used
+  a synthetic target: each basin's observed melt spread over the BFRN bins in proportion to floating
+  area (melt_ismip7_calibration.py, ssa_melt_deltaT_refit_recalibrate.py). ISMIP7 ships the real
+  target (meltobs/melt_target_term2_v3.nc). Real vs proxy, Gt/yr: bin 8 162 vs 106, bin 9 392 vs 170;
+  bins 8-9 hold 51% of the melt (proxy 33%). A uniform-per-area target rewards uniform melt, i.e.
+  small gamma_0 with large deltaT. J4 (ocean_observations_data/) had never been used.
+- `melt_rescore_real_targets.py` (job 184638901, 1.7 SU, Python melt as ssa_melt_j3_refit.py; no ISSM
+  solves; output models/melt_rescore_real_targets.json). The rebuilt proxy J2 reproduces the
+  published J2 exactly (sanity check). Shelves: PIG id 110 (5,693 km^2 on the mesh), Dotson id 97
+  (8,558 km^2, probably with Crosson). Observed-year TF covers 99-100% of both shelves.
+
+| gamma_0 | J2 real | J2/sigma | J3 | warm-cold ratio | J4 min (PIG 09+12) | PIG 2009 / 2012 (obs 72 / 29) | deltaT range (degC) |
+|---|---|---|---|---|---|---|---|
+| 300 | 564 | 0.45 | 3062 | 0.04 | 18.2 | 53 / 47 | 0.87 to 12.26 |
+| 1000 | 529 | 0.41 | 2943 | 0.08 | 15.6 | 57 / 45 | 0.27 to 5.90 |
+| 3000 | 471 | 0.34 | 2775 | 0.16 | 11.1 | 66 / 45 | -0.23 to 2.77 |
+| **5538** | 423 | 0.29 | 2780 | 0.20 | **7.9** | 72 / 44 | **-0.67 to 1.58** |
+| 8307 | 365 | 0.24 | 2809 | 0.25 | 13.2 | 81 / 46 | -0.93 to 1.04 |
+| 11075 | 335 | 0.24 | 2871 | 0.28 | 14.4 | 85 / 44 | -1.12 to 0.65 |
+| 15000 | 312 | 0.26 | 2975 | 0.33 | 16.1 | 90 / 43 | -1.28 to 0.28 |
+| 25000 | 255 | 0.28 | 3309 | 0.44 | 21.8 | 102 / 42 | -1.52 to -0.05 |
+
+- Real J2 now falls monotonically with gamma_0 (still at the edge of the tested range: even 25000
+  puts only 292 Gt/yr in bin 9 vs 392); gamma_0=300 is the worst converged candidate. In sigma units
+  every candidate is within the (large) target uncertainty, minimum 8307-11075.
+- J4: no candidate reproduces the 2009-2012 PIG drop (all 42-47 Gt/yr in 2012 vs 29): the quadratic
+  law under-represents Amundsen variability, as the protocol paper finds. J4 over all years is
+  1.6-2.6 sigma for every candidate (structural misfit).
+- Protocol Monte Carlo (100k; converged candidates), optimal gamma_0 5th/50th/95th pct:
+  J1+J2 5538/25000/25000; J1+J2+J3 5538/25000/25000; J1+J2+J3+J4 1000/15000/25000;
+  J3+J4 (sensitivity terms only) 1000/5538/15000 with 5538 winning 46%. gamma_0=300 wins < 1% in
+  every combination.
+- The protocol's deltaT cap (|deltaT| <= 2 degC) holds only for gamma_0 >= 5538 (3000 has one basin at
+  2.77; 300 has 13 of 16 basins above 2, Amundsen 12.3).
+- Reading: gamma_0 ~ 5,500 (median deltaT 0.15 degC) is the reference that satisfies the cap, gives the
+  best J4 minimum and near-minimum J3, with ~15,000 (= the existing "high melt" g7) as the upper end.
+  Caveats: only 9 candidates and the J2 optimum is at the range edge; J3 not sigma-normalised;
+  weights still the protocol's. Next: dense gamma_0 grid with history matching (sigma-normalised,
+  explicit structural-error term, deltaT capped), then decide whether to re-run the ssp projections.
+
+### 6.30 History-matching melt calibration on a dense gamma_0 grid (2026-11-19)
+`melt_history_match.py` (job 184639879, 7.2 SU, 18 min; Python melt; output models/melt_history_match.json).
+40 gamma_0 from 300 to 100,000 (log); deltaT refit per basin to present-day melt (bisection on
+element totals), with and without a +-2 degC cap. Terms J1 (16 basins), J2 (10 BFRN bins, real target),
+J3 (warm-cold basin-mean change, 7 ocean models, sigma from both states in quadrature), J4 (PIG/Dotson,
+all observed years). Each term: I = RMS of (model - target)/sqrt(sigma^2 + (delta |target|)^2 + 1^2);
+ruled out if any I > 3; pseudo-posterior exp(-sum I^2/2) on a log-uniform prior.
+
+| case | not ruled out | posterior 5 / 50 / 95 | MAP |
+|---|---|---|---|
+| refit, delta 0.1 | none | 1451 / 3093 / 4874 | 3774 |
+| refit, delta 0.3 | 300-7948 | 404 / 2547 / 6782 | 4381 |
+| refit, delta 0.5 | 300-14422 | 346 / 2264 / 8507 | 4381 |
+| capped, delta 0.1 | none | 1733 / 2696 / 3766 | 3252 |
+| capped, delta 0.3 | 300-7948 | 713 / 2167 / 5200 | 2802 |
+| capped, delta 0.5 | 300-14422 | 409 / 1865 / 6869 | 2414 |
+
+Protocol MC on the same grid (median-normalised, U[0,1] weights): refit 3252 / 12427 / 74237; capped
+2802 / 3774 / 63964.
+- J3 sets the upper limit: I(J3) is lowest at gamma_0 ~3,000-3,800 (2.34) and grows fast above ~9,000
+  (4.4 at 15,000, 28 at 100,000), although the median warm-cold ratio is still < 1 there (0.38 at
+  19,400, 0.92 at 100,000): large gamma_0 overshoots some model/basin pairs while undershooting
+  others. The quadratic law cannot match the spread of sensitivities.
+- The deltaT cap binds below gamma_0 ~4,400 (Amundsen); with the cap, J1 and J4 penalise small gamma_0.
+- With 10% structural error nothing survives: the law cannot fit all four terms; the structural
+  term is needed.
+- J2 in sigma units is weakly informative (large bin uncertainties, bin 0 +- 296 Gt/yr), mildly
+  favouring large gamma_0. J4 under the refit is ~2 sigma for every gamma_0 (2009-2012 PIG drop not
+  reproduced).
+- Recommendation: reference gamma_0 ~ 4,000 (deltaT within ~+-2 degC, near-minimum J3; protocol capped MC
+  median 3,774); range ~1,000-8,000. Warm-cold response ~0.17 of the ocean models' median vs 0.03 at
+  gamma_0=300. The existing "high melt" gamma_0=15,000 is ruled out at delta 0.3 (survives at 0.5).
+- Not done: rerunning the ssp projections with the new calibration (and the pin-free HO historical,
+  which uses gamma_0=300).
+
+### 6.31 New SSA melt calibration adopted: gamma_0 = 4,000 (tag _hm4000) (2026-11-19)
+- `melt_calibration_hm_refit.py` (job 184641476, 0.8 SU): per-basin deltaT at gamma_0 = 1000 / 4000 / 8000
+  matching every basin's present-day melt exactly (exact vertex-basin totals, simultaneous bisection);
+  models/melt_calibration_hm.json, members hm1000 / hm4000 / hm8000.
+  - hm4000 deltaT -0.44 .. 2.21 degC (median 0.30; only Amundsen above 2); hm8000 -0.93 .. 1.06;
+    hm1000 0.28 .. 6.04 (6 basins above 2).
+  - hm4000 by basin: -0.439 0.052 0.250 0.884 0.642 0.770 -0.060 -0.098 1.095 2.209 0.560 -0.107 -0.052
+    0.519 0.041 0.351.
+- `ais_0.1_SSA.py`: new `AIS3_SSA_CALIB` ('' = production gamma_0=300; '_hm<g>' = a member of
+  melt_calibration_hm.json). Appended to AIS3_melt_final_ssa, AIS3_historical_1995_2019_SSA (refuses to
+  overwrite a tagged file), AIS3_proj_ssa_init/baseline and every projection experiment name; passed on
+  when projection chunks chain; requires AIS3_PROJ_MELT unset. Defaults unchanged. SSA notebooks
+  regenerated (24/24 static OK).
+- Submitted: melt step 184641641 (AIS3_STEPS=melt_gamma_tuning_ssa, 190 GB) -> SSA historical 1995-2019
+  184641642 (afterok, 48 GB driver), both with AIS3_SSA_CALIB=_hm4000, launch_ais_0.1_SSA.pbs, logs
+  launch_ais_0.1_SSA_{melt,hist}_hm4000.pbs.{out,err}.
+- Next: compare the _hm4000 historical with the production one and CPOM; then projections
+  (AIS3_SSA_CALIB=_hm4000: ctrl first, then ssp585 CESM2).
+
+### 6.32 Friction-law calibration runs: SSA historical 1995-2019 with four friction laws (2026-11-19)
+- New `AIS3_SSA_FRICTION` in ais_0.1_SSA.py (historical_dhdt_tuning_ssa only): '' = production Budd p=q=1
+  with prescribed Ehrenfeucht N (coupling 3); p1_flotN, p3_fixedN, p3_flotN (p5_flotN allowed) = exponent
+  p (q=1) with prescribed N or flotation N (coupling 2). `rescale_friction_drag_preserving` rescales C once
+  at the 1995 start so the initial drag is unchanged (C_new = C_old sqrt(N_old u0^(1-1/p) / N_new^(1/p)),
+  as projection_ssp_ssa's coupledN/coupledN_p3), so all variants fit present-day velocity equally and
+  differ only in their transient response. Tag _<variant> appended to the historical run name/file.
+- 2x2 design, all with the new melt (AIS3_SSA_CALIB=_hm4000): production p1 fixed N = 184641642;
+  p1_flotN 184642396, p3_fixedN 184642397, p3_flotN 184642398 (logs
+  launch_ais_0.1_SSA_hist_hm4000[_<variant>].pbs.{out,err}).
+- Planned scoring: velocity change 2001 -> 2019 against MIPKIT vx/vy_timeseries (2001-2020, 16 epochs),
+  focused on Amundsen, and CPOM dH/dt by basin and period on the fixed-coverage mask (6.13), with the
+  history-matching approach of 6.30.
+- 2026-11-20: all four inner solves finished (exit 0, 27 GB outbin each): production-friction _hm4000
+  5.0 h / 512 SU; p1_flotN 4.5 h / 458 SU; p3_fixedN 13.9 h / 1,429 SU; p3_flotN 7.0 h / 716 SU. All four
+  48 GB drivers were OOM-killed (exit 137) loading the results (~770 SU of driver time). New
+  `AIS3_HIST_LOAD_ONLY=1` in historical_dhdt_tuning_ssa loads a finished run (lock + outbin required)
+  instead of resubmitting. Load-only jobs at 190 GB: 184686628-31; comparison requeued after them
+  (184686632). Old driver logs kept as *.oom_driver_20261120.
+- Rescale check: grounded flotation-N / prescribed-N median 2.01; C factor median 0.71 (p1_flotN),
+  1.64 (p3_fixedN), 1.41 (p3_flotN).
+- Correction: the OOM-killed drivers had started saving: each left a 4 GB AIS3_historical_1995_2019_SSA_hm4000*.nc
+  without TransientSolution (truncated write). Renamed to *.incomplete_oom_20261120.nc; the first load-only jobs
+  refused to overwrite them (logs *.refused_exists_20261120). Load-only resubmitted at 190 GB (184687874-78);
+  comparison (ISSM_DIR fix) requeued after them (184687879).
+
+### 6.33 Friction-law comparison against CPOM and the 2007-2019 speed-up: not discriminating (2026-11-20)
+`compare_ssa_historical_friction.py` (job 184738367, 3.8 SU; models/ssa_historical_friction_scores.json).
+Load-only jobs 184687874-78 saved the four complete historical files (27.6 GB each). Two failed comparison
+attempts kept as *.failed_issmdir_20261120 / *.failed_veltime_20261120 (2019 mosaic dated 2019.09, runs end 2019.0).
+Fixed-coverage mask 599,285 vertices / 7.563 Mkm^2 (identical to 6.13).
+
+| run | domain Gt/yr 96-01 / 02-13 / 14-19 | RMSE | Amundsen (b9) | RMSE b9 | Amundsen speed 2019/2007 (obs 1.180) | RMS log speed ratio |
+|---|---|---|---|---|---|---|
+| CPOM | +33.0 / -24.5 / -56.9 | | -32.4 / -65.3 / -97.1 | | | |
+| prod300 (p1 fixedN) | -103.5 / -44.4 / -47.9 | 0.0110 | -89.1 / -88.6 / -73.2 | 0.106 | 0.990 | 0.192 |
+| hm4000 (p1 fixedN) | -105.7 / -49.7 / -53.6 | 0.0112 | -90.0 / -91.2 / -76.4 | 0.108 | 0.994 | 0.191 |
+| hm4000 p1_flotN | -121.3 / -68.3 / -76.7 | 0.0129 | -95.3 / -103.2 / -95.9 | 0.121 | 1.031 | 0.189 |
+| hm4000 p3_fixedN | -126.3 / -25.5 / -23.8 | 0.0129 | -84.8 / -80.5 / -66.1 | 0.102 | 0.992 | 0.236 |
+| hm4000 p3_flotN | -146.3 / -41.8 / -41.4 | 0.0142 | -90.4 / -89.6 / -78.4 | 0.108 | 1.005 | 0.209 |
+
+- The melt recalibration changes 1995-2019 very little: the historical ocean is the constant climatology, so
+  melt sensitivity to TF change has nothing to act on.
+- Every run shares the two dominant misfits: a 1996-2001 start-up loss of 100-150 Gt/yr (CPOM +33) and no
+  Amundsen acceleration (observed speed +18%, models +/-3%; observed loss growing -32 -> -97, models flat
+  or declining). The observed change was ocean- and shelf-driven, which these runs do not contain, so the
+  record cannot discriminate the friction laws. The laws do differ substantially (2014-2019 domain loss -24 to
+  -77 Gt/yr, Amundsen -66 to -96), but each metric favours a different law, and the shared misfits in the temporal
+  pattern are larger than the differences between laws, so no law is consistently better. The friction law
+  matters (factor ~3 here, x2.0-2.6 in LARMIP); this record just cannot tell which is right.
+- LARMIP-3 main set (coupledN_p3 = p3_flotN): neither contradicted nor supported; no case for resubmission.
+- Next, if pursued: historical runs with time-varying ocean forcing (ISMIP7 contemporary OCX pathways, incl.
+  the "varying" Amundsen thermocline pathway) with the new melt law, scored from 2002 to avoid the start-up
+  transient. Only then can friction law and melt calibration be tested against the Amundsen speed-up.
+
+### 6.34 OCX-forced SSA historical runs ('vary' ocean pathway) (2026-11-20)
+- `ais_0.1_SSA.py`, historical_dhdt_tuning_ssa: new `AIS3_SSA_OCEAN` (main/cold/warm/vary) applies the ISMIP7
+  contemporary ocean pathway (OCX/ocean/<pathway>/v2) as an anomaly on the calibration climatology,
+  TF(t) = TF_Zhou + (OCX_<pathway>(t) - OCX_main(t)), annual columns at year + 0.5 (set_ocx_ocean_forcing);
+  tag _ocx<pathway>. After 1995 'main' equals the climatology; 'vary' has the 16-yr thermocline cycle in
+  Amundsen/Getz/Aurora: at 510 m the anomaly is up to about +-2 degC, warm 2008, cold 2000 and 2016, zero in
+  2004/2012, ~121k grid cells.
+- New `AIS3_HIST_SUBMIT_ONLY=1`: the driver submits the inner solve and exits (the 190 GB drivers of 6.32 cost
+  more idle than the solves); results are loaded afterwards with AIS3_HIST_LOAD_ONLY=1.
+- Submitted (submit-only, 96 GB): prod300 vary 184749304; hm4000 vary 184749305; hm4000 p1_flotN / p3_fixedN /
+  p3_flotN vary 184749307-09 (logs launch_ais_0.1_SSA_hist<tag>.submit.{out,err}).
+  compare_ssa_historical_friction.py now also scores the *_ocxvary runs (AIS3_SCORE_TAG for a new output name).
+
+### 6.35 v2 projection set: stage A launched, SMB-elevation feedback added (2026-11-20)
+Plan: docs/projection_experiments.md, "Next set (v2)". v2 reference = `AIS3_SSA_CALIB=_hm4000` +
+`AIS3_PROJ_FRICTION=coupledN_p3` (C rescaled once at 2019 from the _hm4000 historical, as for LARMIP-3).
+- Measured October costs (inner + driver, retries included): ~2.5-3k SU to 2100; to 2300 ctrl 6.4k,
+  ssp585 MRI 8.5k, ssp126 CESM2 10.6k, ssp585 CESM2 16.6k, high melt 18.2k, collapse 17.3k. The idle
+  32-cpu / 128 GB driver is 40-50% of each. LARMIP coupledN_p3 runs cost 1.14-2.0x their standard twins.
+- Smoke 184750273 (ctrl, 0.2 yr, 13 SU): built models/AIS3_proj_ssa_init_hm4000.nc and
+  AIS3_proj_ssa_baseline_hm4000.npz from AIS3_historical_1995_2019_SSA_hm4000.nc. gamma_0 4000, deltaT
+  -0.439..2.209 (= hm4000); coupledN_p3 rescale grounded N_new/N_old median 2.09, C factor median 1.372.
+  VAF +1.09e10 m^3 over the 0.2 yr; no NaN.
+- Stage A submitted (all to 2300; logs config/logs/proj_ssa_<exp>_2019.{out,err}):
+  ctrl_coupledN_p3_hm4000 184750757; ssp585 CESM2 184750758, MRI 184750759; ssp126 CESM2 184750760,
+  MRI 184750761; ssp534-over CESM2 184750762, MRI 184750763 (first ssp534-over runs; TF and dEBM2
+  acabf present to 2299/2300 for both); ssp585 CESM2 collapse 184750764. Names end _coupledN_p3_hm4000.
+- New `AIS3_PROJ_SMBFB=1` (+ `AIS3_PROJ_SMBFB_GCM` for ctrl) in projection_ssp_ssa: md.smb = SMBgradients,
+  SMB = smbref + dacabfdz (s - href); href = init-state surface (models/AIS3_proj_ssa_href<calib>.npy);
+  dacabfdz (dEBM2-8000m, same grid as acabf) annual from the scenario with SMB forcing, else the GCM's
+  historical 1995-2014 mean (models/AIS3_proj_ssa_dsmbdzclim_<gcm>_dEBM2-8000m_1995-2014.npy). ISSM's
+  SmbGradientsx has no clamping or unit conversion; pyissm scales smbref and b by 1/yts. Collapse
+  sub-solves window smbref/b_pos/b_neg like mass_balance. History files of feedback runs hold `surface`.
+  CESM2 dacabfdz, m ice eq/yr per km, p1/p50/p99: 2000 -0.59/0.00/+0.53; ssp585 2100 -0.76/0.00/+1.54;
+  2275 -0.49/0.00/+3.71.
+- Chain hand-off now also passes AIS3_PROJ_SMBFB, AIS3_PROJ_SMBFB_GCM, AIS3_PROJ_MELTINTERP and
+  AIS3_ISSM_DIR (MELTINTERP was dropped after the first chunk before, which would have broken any
+  multi-chunk SEM1 run).
+- Feedback smokes (0.2 yr): ctrl_coupledN_p3_smbfb-cesm2_hm4000 184750806,
+  ssp585_cesm2_ref_ref_coupledN_p3_smbfb_hm4000 184750807. Check: config/check_smb_feedback_smoke.py
+  (ctrl history: SMB - SMB0 = b (s - href) per vertex).
+- 2026-11-21: both feedback smokes exit 0 (7.4 SU each); feedback term zero at the start. Check PASS once
+  corrected for timing: ISSM evaluates SMB at the start of each step, so the SMB written at output k uses the
+  surface of output k-1. At t=2019.2: SMB - SMB0 vs b (s_2019.1 - href) slope 0.999999, max residual 3.0e-7
+  m/yr (float32), feedback term up to 5.3e-3 m/yr. (The first check compared with the same output's surface:
+  slope 0 / 0.52, a false FAIL; script fixed.)
+- Stage B submitted (to 2300): ctrl_coupledN_p3_smbfb-cesm2_hm4000 184791719, ctrl_..._smbfb-mri_hm4000
+  184791720, ssp585_cesm2_ref_ref_coupledN_p3_smbfb_hm4000 184791721, ssp585_mri_... 184791722.
+- Stage A progress 2026-11-21: all chains running; checkpoints to 2050 (ctrl, ssp585 MRI, ssp534-over MRI),
+  2075 (ssp126 MRI), 2100 (ssp585 / ssp126 CESM2), 2125 (ssp534-over CESM2).
+- Collapse chain stopped at 2071: the 2071 sub-solve failed twice within 1 min on gadi-cpu-clx-2260 with an
+  MPI/UCX network fault ("UD endpoint ... unhandled timeout error", SIGABRT), not a solver failure; 2058 and
+  2066 had each failed once and passed on retry. Run dir archived as ..._2050-2075_sub2071.0_failed_ucx_20261121;
+  resumed from the 2071 checkpoint (184791699, logs ..._2071-resume.{out,err}).
+- au88 available 632.8k SU (2026-11-21).
+- 2026-11-21: OCX-vary solves: prod300 5.4 h / 522 SU; hm4000 5.1 h / 488 SU; hm4000 p1_flotN 4.4 h / 426 SU (all
+  exit 0). The submit-time watcher was killed with the session; load-only jobs submitted by hand
+  (184791760, -61, -63). hm4000 p3_flotN running at ~5.6 min/step (climatology run: ~1.75), at step 182/240 after
+  17 h. hm4000 p3_fixedN ran at ~80 min/step (climatology run: ~3.5 min/step): 13 of 240 steps in 17 h, so it
+  could not finish within its 48 h limit; stopped by hand (184750375, ~1,650 SU). p=3 with fixed N is numerically
+  intractable once ocean variability reaches the grounding zones (with N held fixed, near-flotation ice responds
+  very nonlinearly): a practical argument against that law. Comparison (AIS3_SCORE_TAG=_ocx) queued after the
+  four loads.
+- Pin-free HO historical (6.28) complete: chunk 4 (2013-2019) exit 0, driver 1,170 SU.
+- hm8000 member started: melt step 184792047 (AIS3_STEPS=melt_gamma_tuning_ssa, AIS3_SSA_CALIB=_hm8000) ->
+  historical submit-only 184792049 (afterok; logs config/launch_ais_0.1_SSA_{melt,hist}_hm8000*). Load-only,
+  then ctrl + ssp585 CESM2 with _hm8000, still to do.
+- MRI attribution (v2, to 2300): ssp585_mri_ref_oceanonly_coupledN_p3_hm4000 184792079, ..._smbonly_... 184792083.
+- New `AIS3_PROJ_DRIFTCORR=<ctrl experiment>`: fixed SMB flux correction = minus that ctrl's
+  (H(2020.0) - H(2019.1)) / 0.9 yr on every vertex with ice at 2019.1; refuses a ctrl with other friction or
+  calibration tags; name _driftcorr; passed down the chain. v2 ctrl initial drift: VAF +110.9 Gt/yr (2019.1-2020),
+  +133.6 Gt/yr (2020-2030); correction -113.5 Gt/yr grounded, +242.7 Gt/yr floating (shelves thin at the start).
+  Smoke 184792610 (6 SU): VAF change over 0.2 yr +2.8e8 m^3 vs +1.09e10 without (97% of the drift removed).
+- Drift test submitted (to 2150): ctrl_coupledN_p3_driftcorr_hm4000 and
+  ssp585_cesm2_ref_ref_coupledN_p3_driftcorr_hm4000 (job IDs in config/logs/proj_ssa_<exp>_2019.out).
+- SEM1 not started: production ISSM is commit 40c764c7 (spack, vk83); the local /g/data/au88/jh7060/ISSM tree is
+  99 commits past it on a diverged branch and Element.cpp differs, so the SEM1 build must be 40c764c7 + the
+  one-line patch with the production dependencies. Waiting on that decision and on the deltaT refit choice.
+
+### 6.35 Pin-free HO historical vs pinned vs CPOM (2026-11-21)
+`compare_ho_pinfree_historical.py` (job 184792081, 1.4 SU; models/ho_pinfree_historical_scores.json); fixed-coverage
+mask as 6.13/6.33. Gt/yr 1996-2001 | 2002-2013 | 2014-2019, yearly RMSE (m/yr):
+
+| region | CPOM | HO pinned (relaxfix) | HO pin-free (budd_nopins) | RMSE pinned -> pin-free |
+|---|---|---|---|---|
+| domain | +33.0 / -24.5 / -56.9 | -80.3 / -29.8 / -29.1 | -32.5 / +7.0 / -0.6 | 0.0096 -> 0.0083 |
+| Amundsen (9) | -32.4 / -65.3 / -97.1 | -86.9 / -90.9 / -73.9 | -60.1 / -63.3 / -47.7 | 0.1045 -> 0.0893 |
+| Filchner-Ronne (14) | +16.1 / +31.6 / +29.3 | +6.9 / +16.3 / +22.8 | +40.7 / +41.7 / +42.7 | 0.0146 -> 0.0169 |
+| Ross (7) | -12.0 / +1.9 / +19.2 | -9.2 / -1.2 / +3.5 | +14.8 / +20.0 / +23.6 | 0.0122 -> 0.0196 |
+| basin 0 | +8.0 / +9.3 / +20.5 | -5.1 / +3.2 / -1.9 | -7.7 / +1.1 / -3.7 | 0.0323 -> 0.0354 |
+
+- Pin-free: best whole-domain fit of any historical run so far (SSA 0.0110); start-up loss -80 -> -33 Gt/yr;
+  Amundsen much closer early. Ross and Filchner-Ronne (the formerly pinned regions, which start ~30% slow
+  with the SSA Budd field, 6.27) now thicken too much. Thickness extremes 1995-2019: max |dH| 1,141 m (pinned
+  3,132), > 1 km at 8 vertices (pinned 38), > 300 m at 3,009 (3,853).
+- Like every run it misses the late Amundsen acceleration (-48 vs -97 in 2014-2019; constant ocean).
+- Next for HO: forward-only friction updates in the formerly pinned regions to bring their speeds to observed.
+- Note: other jobs on the account (another session): SSA _hm8000 historical and _hm4000 projections
+  (ctrl / ssp585 coupledN_p3 driftcorr, ssp585 collapse coupledN_p3).
+- SEM1 set up (2026-11-21). Recommendation agreed: build and refit now, decide on the ~70k SU SEM1 runs once
+  the v2 ocean term is known.
+  - ISSM: `git archive 40c764c7` (= production spack issm-git.2026.05.18) -> /g/data/au88/jh7060/ISSM-40c764c7-sem1;
+    one-line patch in Element::Ismip6FloatingiceMeltingRate: `!this->IsAllFloating()` -> `this->IsAllGrounded()`
+    (melt on fully and partly floating elements; fully grounded still skipped; original kept as
+    Element.cpp.orig_40c764c7). Built by config/build_issm_sem1.pbs (184795521, 1.9 SU, 3.5 min): sources the
+    recorded spack-build-env.txt with the prefix swapped in SPACK_STORE_RPATH_DIRS and the recorded configure
+    args; CXXFLAGS -fiopenmp -O3 -DNDEBUG -fPIC -fp-model precise (as production). issm.exe RPATH = its own
+    install/lib, and libISSMCore resolves there even with production lib on LD_LIBRARY_PATH. Installed file set =
+    production's apart from .la/.md5. Marker install/SEM1_PATCH.
+  - Calibration: config/melt_calibration_hm_refit_sem1.py (184795378, 0.5 SU) -> models/melt_calibration_hm_sem1.json,
+    member hm4000sem1. Element-integral form (mean melt x area x floating fraction, as SubelementMelt1's
+    (1-phi) fmb + phi gmb); target = each basin's no-SEM1 total at hm4000. Sanity: no-SEM1 element integral 863.4
+    vs stored 865.0 Gt/yr (max basin diff 0.37). 67,332 partly floating elements (42,292 km^2 floating). SEM1
+    without refit: +6.1% (basins +3.1 .. +19.8%). Refit deltaT -0.486 .. 2.101, shifts -0.150 .. -0.007 degC;
+    basin errors 0.0000 Gt/yr.
+  - Driver: AIS3_SSA_CALIB=_hm<g>sem1 requires $AIS3_ISSM_DIR/SEM1_PATCH and sets melt_interpolation
+    SubelementMelt1 in historical_dhdt_tuning_ssa and every projection chunk; members looked up in all
+    models/melt_calibration_hm*.json; Subelement* interpolation with ismip6 melt refused on an unpatched build.
+  - Submitted: melt step 184796538 -> historical submit-only 184796539 (both AIS3_SSA_CALIB=_hm4000sem1,
+    AIS3_ISSM_DIR=.../ISSM-40c764c7-sem1/install); then load-only and a ctrl smoke (patch check: same total
+    floating melt as the _hm4000 smoke, melt now on partly floating elements).
+- hm8000: melt step done (11.5 SU); historical inner solve 184794259 running. Chained: load-only 184796585 ->
+  ctrl smoke 184796586 (builds AIS3_proj_ssa_init_hm8000.nc) -> ctrl_coupledN_p3_hm8000 184796587 and
+  ssp585_cesm2_ref_ref_coupledN_p3_hm8000 184796588 (to 2300).
+- 2026-11-21 evening, incidents and fix:
+  - Three stage-A 2050-2075 inner solves (ctrl, ssp585 MRI, ssp534-over MRI) died after ~1 min on node
+    gadi-cpu-clx-0145 with the MPI/UCX fault ("UD endpoint ... unhandled timeout error", SIGABRT). Their drivers
+    (pyissm's blind lock-file wait) sat idle 14-17 h (~3k SU). Drivers 184763380/184763555/184767507 deleted; run
+    dirs archived as *_2050-2075_failed_ucx_clx0145_20261121; resumed from the 2050 checkpoints: ctrl 184813567,
+    ssp585 MRI 184813568, ssp534-over MRI 184813569 (logs ..._2050-resume.{out,err}).
+  - ssp126 MRI 2075-2100 (inner 184768503 on gadi-cpu-clx-2050) stalled: outbin ~54% of a full chunk after 14 h
+    and no write for 2 h with 48 cores busy (previous chunk 3 h). Deleted with its driver 184768454; dir archived
+    as *_2075-2100_stalled_clx2050_20261121; resumed from 2075 (184813632). If it stalls again, it is the
+    state, not the node.
+  - Fix in ais_0.1_SSA.py: every projection chunk now uses the watched solve (`_solve_watched`, collapse only
+    before): an inner job that ends without a lock file is detected within minutes and retried once after
+    10 min; a second failure stops the chain at the last checkpoint. Chunks already running keep the old wait.
+  - SEM1: historical inner solve is 184799625; chained load-only 184813499 -> ctrl smoke 184813500.
+- 2026-11-22 01:00 check: no chain failed since the restarts. hm8000 load + smoke passed (gamma_0 8000, deltaT
+  -0.930..1.058; same coupledN_p3 rescale as hm4000); ctrl/ssp585 hm8000 chains running. SEM1 historical loaded
+  (184813499, exit 0); SEM1 ctrl smoke passed (184813500).
+  - SEM1 patch active: grounded vertices carrying ismip6 melt at 2019.1: 26,517 with hm4000sem1 vs 40 with hm4000.
+  - ISSM's Tria::TotalFloatingBmb integrates melt over the floating part of every element (sub-element Gauss
+    points), so it counts partly floating elements. At 2019.1: hm4000 709.2, hm4000sem1 683.9 Gt/yr; the refit's
+    element-mean form on the same fields gives 702.7 / 677.6 (ISSM ~1% above in both), so the 3.6% lower SEM1
+    melt at 2019 is real. It comes from the divergent 1995-2019 histories, not the integral: the calibration
+    matches at the 1995 relaxed state.
+  - Early SLE, run minus its own ctrl, mm, 2030/2040/2050 (ISSM VAF): October ssp585 CESM2 -2.5/-5.8/-11.5,
+    v2 -2.3/-5.1/-10.1; October ssp585 MRI -6.1 at 2050, v2 -5.9; v2 MRI ocean-only +0.05/+0.04/+0.17,
+    SMB-only -6.1 at 2050; v2 ssp126 CESM2 -9.2 (October -10.4); v2 collapse -10.0; SMB feedback changes
+    nothing to 2050 (CESM2 -10.09 vs -10.07). ctrl drift by 2050: October -16.2, v2 -10.7 mm. Too early to gate
+    SEM1: the ocean term is still tiny at 2050 and grew mostly after 2150 in October.
+
+### 6.36 OCX 'vary' historical runs: forcing applied, grounded ice does not respond (2026-11-22)
+All four OCX-vary runs loaded (p3_flotN solve 20 h; load 184813476); comparison 184813477 (8 SU,
+models/ssa_historical_friction_scores_ocx.json). OCX historical files are 110 GB each (vs 27.6 GB): pyissm
+save_model writes basalforcings.tf (30 x 1,588,887 x 25) as a string array (~80 GB); data intact, the
+load path converts it back. Worth fixing in pyISSM io (save list-of-arrays fields as float).
+- The anomaly reaches the model: Amundsen floating ice (x -1900..-1300, y -800..0 km, 29,034 vertices)
+  differs from the climatology run by up to 3.6 / 16 / 43 / 46 / 54 / 68 m in 1996 / 2000 / 2004 / 2008 /
+  2012 / 2019 (mean shift a few metres).
+- Grounded response is negligible: domain 2014-2019 changes by <= 1.2 Gt/yr (e.g. hm4000 -53.6 -> -52.8;
+  p1_flotN -76.7 -> -75.5; p3_flotN -41.4 -> -40.6); Amundsen speed 2019/2007 changes by <= 0.002
+  (hm4000 0.994 -> 0.995; observed 1.180); per-basin speed ratios identical to ~3 decimals.
+- Same weak shelf-to-grounded coupling as 6.24-6.26 (Amundsen trunks +8% even with every shelf removed), and
+  the vary pathway oscillates about zero. So the historical period cannot discriminate the friction laws
+  with this setup. The observed PIG speed-up is attributed to ice-shelf retreat (Joughin et al. 2021), which a
+  fixed calving front cannot produce.
+- Next, if pursued: prescribe the observed ice front (MIPKIT icemask_greene, 24 epochs 1997-2021) in a
+  historical run, removing ice beyond the observed front as the collapse runs do, and test whether the
+  Amundsen speed-up appears.
+
+### 6.37 Prescribed observed ice front in the SSA historical run (2026-11-22)
+- `ais_0.1_SSA.py`, historical_dhdt_tuning_ssa: new `AIS3_SSA_FRONT=greene` (set_greene_front): moving front
+  (transient.ismovingfront=1, calving.default with zero calving rate, frontalforcings.default with zero melt,
+  kill_icebergs=1) with levelset.spclevelset fixed at every vertex as a time series: the model's own levelset
+  at the start, then one column per Greene et al. (2022) mask (MIPKIT icemask_greene, 1997.75, 2000.2, ...,
+  2021.2; nearest 500 m cell). Only observed change is imposed: floating model ice is set ice-free (+1) at an
+  epoch if it is ice in the 1997 mask and not ice at that epoch (re-advance allowed). The model geometry
+  already has ~present-day fronts, so ice the model has but the 1997 mask lacks is left alone (mismatch).
+  Applied after the transient flags are reset. New `AIS3_HIST_END` (default 2019) for short runs.
+  Tags _frontgreene and _to<end>.
+- Smoke test: _hm4000, production friction, 1995-2001 (crosses the 2000.2 epoch), driver waits (96 GB).
+- Smoke 1995-2001 (_hm4000_frontgreene_to2001): moving front ran cleanly (1 h 51 min, 184 SU; driver 109 SU).
+  Removed 0 / 3 / 4 / 9 floating vertices at 1997.75 / 2000.2 / 2000.75 / 2001.2. Offline count per epoch (model ice
+  that is ice in 1997 and not at the epoch): 2008 51 vtx / 64 km^2; 2014 136 / 284; 2016 542 / 821; 2018 874 / 4,570
+  (Larsen C, A68); 2019 1,025 / 4,794; Amundsen 2016 454 / 584, 2019 660 / 918 km^2. Only 92 floating model vertices
+  were not ice in the 1997 mask. The front signal is mostly 2016-2019 (PIG/Thwaites calving, Larsen C).
+- Full run 1995-2019 (_hm4000, production friction, _frontgreene) submitted in submit-only mode: 184854000.gadi-pbs.
+- 2026-11-22 15:30 check (au88 573.9k SU left). Progress: ctrl 2125, ssp585 CESM2 2100, ssp585 MRI 2125, ssp126 CESM2
+  2200 / MRI 2175, ssp534-over CESM2 2200 / MRI 2125, collapse 2100; feedback ctrl CESM2 2125 / MRI 2150, ssp585
+  CESM2 / MRI 2100; MRI ocean-only 2125, SMB-only 2150; drift ctrl 2100; hm8000 ctrl 2100. The ssp126 MRI 2075
+  resume ran through, so its earlier stall was not the model state.
+  - ssp585 CESM2 2100-2125 walltime-killed at 16 h (outbin ~96% of a full chunk); old-code driver 184776630 idle.
+    Deleted; dir -> *_2100-2125_walltime_20261122; resumed from 2100 with AIS3_PROJ_TIME_FACTOR=5 (184854144;
+    the factor is passed down the chain).
+  - ssp585 CESM2 driftcorr 2019-2050 inner died (SIGABRT); old-code driver 184793499 idle 23 h. Deleted; dir ->
+    *_failed_sigabrt_20261122; restarted from 2019 (184854145).
+  - Stalls: hm8000 ssp585 2019-2050 (inner 184817855, clx-0181, 87% done, no write for 2.5 h) and ssp534-over
+    CESM2 2200-2225 (184838418, clx-0379, no write for 4.3 h), both with 48 cores busy. Inner jobs deleted; their
+    drivers are watched-solve and retry after 10 min.
+  - All running drivers now started after the watched-solve fix (old ones deleted above).
+  - New: `AIS3_PROJ_STALL_MIN` (default 180; 0 off) in _solve_watched kills a non-collapse inner job whose outbin has
+    not grown for that long, so it is retried like a crash (passed down the chain; applies from each chain's next
+    chunk). New read-only config/check_projection_chains.sh lists DEAD / STALL / ok for every unfinished chunk.
+- 2026-11-22 21:15 check (526.7k SU left): health check clean apart from the collapse 2109 sub-solve (1-yr
+  sub-solve, 142 min since its first output; hard collapse years took up to 3.7 h in October; covered by its 8 h
+  walltime and the retry). check_projection_chains.sh now uses STALL_MIN_COLLAPSE (300 min) for collapse runs.
+  hm8000 ssp585 (83 min) and MRI feedback ssp585 2100-2125 (87 min) have pre-stall-code drivers: a background
+  watcher qdels either if its outbin is unchanged past 180 min (the driver then retries).
+- New config/proj_v2_sle_table.py (login node; stitches chunk histories; ISSM VAF, run minus its own ctrl, mm SLE).
+  First readout at 2100 / 2125 / 2150:
+  - ssp585 CESM2: October -75.1 / -117.5 / -148.1, v2 -63.2 / - / -; with SMB feedback -63.5 / -92.4.
+  - collapse adds (collapse - no collapse) +20.5 mm by 2100 under v2 vs +10.7 in October.
+  - MRI ssp585: October -43.6 / -67.9 / -83.7, v2 -40.2 / -57.7; ocean-only +3.3 / +9.6 (October CESM2
+    ocean-only +1.7 / +3.2), SMB-only -42.5 / -65.8 / -79.3; ocean + SMB within 1.5 mm of the combined run.
+  - ssp126: CESM2 -35.0 / -48.6 / -62.5 (October -42.9 / -61.8 / -82.3), MRI -16.4 / -24.0 / -33.8.
+  - ssp534-over CESM2 -42.9 / -59.9 / -73.0 (= ssp126 CESM2 at 2100 within 8 mm), MRI -26.4 / -39.2 / -49.2.
+  - ctrl drift by 2150: October -59.1, v2 -36.9, feedback ctrls -37.3/-37.4, hm8000 -30.8 (2125), drift-corrected
+    ctrl -0.1 mm through 2125 (the correction removes the drift almost completely).
+  - SEM1 gate: the v2 ocean term (MRI) is ~3x October's by 2125 and accelerating; decide at ~2200.
+- 2026-11-23 12:30 check (497.4k SU left). Health: all chunks writing except ssp534-over MRI 2225-2250 (112 min;
+  post-stall-code driver, auto-kill at 180 min). Retries passed: ssp534-over CESM2 2200-2225, MRI feedback ssp585
+  2100-2125. ctrl_coupledN_p3_driftcorr_hm4000 complete through 2150; its ssp585 partner at 2075 (restarted).
+  Progress: ctrl 2225, ssp585 CESM2 2125 / MRI 2175, ssp126 CESM2 2200 / MRI 2250, ssp534-over 2225 / 2225,
+  collapse 2100 (2121 sub-solve), feedback ctrls 2225 / 2250, feedback ssp585 2125 / 2125, MRI ocean/SMB-only
+  2175 / 2175, hm8000 ctrl 2200 / ssp585 2100.
+  - SLE (run - own ctrl, mm, ISSM VAF), 2150 / 2175: v2 MRI ocean-only +21.0 / +38.8 (October CESM2 ocean-only
+    +5.5 / +8.7): ~4x October and doubling every ~25 yr. v2 ssp585 MRI turns already: -61.5 (2150) -> -50.5 (2175);
+    October MRI was still falling (-83.7 / -91.4). SMB-only -79.3 / -83.2; ocean + SMB -44.4 vs combined -50.5 at
+    2175 (6 mm non-additive). ssp534-over CESM2 -101.2 at 2225 vs ssp126 -86.5 at 2200; hm8000 ssp585 CESM2
+    -58.9 at 2100 (hm4000 -63.2). Feedback: no effect yet (CESM2 -92.4 vs -92.0 at 2125). v2 ctrl drift -53.9 by
+    2225 (October -88.0).
+  - SEM1 gate effectively met: on the current trend the v2 ocean term passes ~100 mm well before 2300.
+- 2026-11-23: SEM1 2x2 approved and launched (to 2300; AIS3_SSA_CALIB=_hm4000sem1, AIS3_ISSM_DIR=
+  /g/data/au88/jh7060/ISSM-40c764c7-sem1/install, coupledN_p3; ssp585 runs with AIS3_PROJ_TIME_FACTOR=5 from the
+  start): ctrl_coupledN_p3_hm4000sem1 184910466, ssp585_cesm2_ref_ref_coupledN_p3_hm4000sem1 184910467,
+  ctrl_coupledN_p3_smbfb-cesm2_hm4000sem1 184910468, ssp585_cesm2_ref_ref_coupledN_p3_smbfb_hm4000sem1 184910469.
+  With stage A (v2) and stage B (v2+fb) CESM2 runs this completes the SEM1 x feedback 2x2. Added to
+  config/proj_v2_sle_table.py.
+- 2026-11-23: full _hm4000_frontgreene solve finished (exit 0) in 13.8 h / 1,326 SU (about 2.7x the fixed-front run:
+  the moving front is costly). The detached watcher died again; load 184910843 and comparison 184910844
+  (AIS3_SCORE_TAG=_front) submitted by hand.
+
+### 6.38 HO track: melt refit at gamma_0 = 4000 and friction refinement in the formerly pinned regions (2026-11-23)
+- (a) `melt_calibration_hm_refit_ho.py` (job 184915551): as the SSA refit, on the HO 1995 relaxed geometry
+  (base-layer draft and masks of AIS3_ho_relaxed.nc; mesh/basins from the SSA melt file). Members
+  hm1000/hm4000/hm8000 in models/melt_calibration_hm_ho.json, all basins matched exactly. hm4000 deltaT
+  -0.424 .. 2.323 degC (median 0.307; Amundsen 2.323, the only basin > 2), close to the SSA hm4000 (-0.439 .. 2.209).
+  By basin: -0.424 0.188 0.255 0.924 0.753 0.807 0.015 -0.092 1.145 2.323 0.650 -0.065 -0.007 0.607 0.051 0.358.
+- (b) `ho_friction_fixedpoint.py` (driver 184915690, launch_ho_friction_fixedpoint.pbs, 24 cpu / 720 GB):
+  forward-only C updates on the 1995 HO state with the SSA Budd field and no pins, on formerly pinned grounded
+  vertices with obs > 10 m/yr: C *= sqrt(u_model/u_obs), smoothed (two element-averaging passes), limited to
+  [0.67, 1.5] per iteration, C in [0.05, 900]; 3 iterations, each a 96-cpu hugemem stress-balance solve
+  (execution/AIS3_ho_fricfp_it<k>); iteration 0 speeds from B95 (6.27). Output models/ho_friction_fixedpoint.npz.
+- Then (c): pin-free HO historical with the refined C and gamma_0 = 4000 (needs an option to read both).
+
+### 6.39 Observed front retreat barely reaches the grounded ice (2026-11-23)
+Load 184910843, comparison 184910844 (models/ssa_historical_friction_scores_front.json). hm4000 with the observed
+Greene front vs the same run with a fixed front:
+- Amundsen 2014-2019 -76.4 -> -77.0 Gt/yr (CPOM -97.1); domain -53.6 -> -54.2 (CPOM -56.9); Filchner-Ronne
+  unchanged; Amundsen speed 2019/2007 0.994 -> 0.998 (observed 1.180).
+- Local, Amundsen 2019, front/fixed speed ratio: floating median 1.000, p95 1.10, max 1.91; grounded < 5 km of
+  the GL p95 1.03 (max 1.53 at a few vertices); 5-20 km p95 1.02. The floating ice near the removed front speeds
+  up; the grounded ice barely does (observed PIG grounded speed-up after the 2017-2020 calving ~12%, Joughin et
+  al. 2021).
+- Fourth independent test of the same property (shelf removal 6.24, softened margins 6.26, OCX vary 6.36,
+  observed front here): in this SSA setup, Amundsen grounded ice responds very weakly to losing or thinning
+  its shelves. This, not the melt or friction calibration, is the main limit on the model's melt sensitivity.
+- Open suspects: the SSA approximation itself (no HO shelf-removal test yet), and how the inverted drag and the
+  prescribed N hold the grounding zone. Next decisive check: the shelf-removal test on the pin-free HO state
+  once the HO friction refinement (6.38) is done.
+
+### 6.40 HO shelf-removal test queued (2026-11-23)
+`check_ho_shelf_removal.py` (184919663, afterok on the friction fixed-point driver 184915690): on the pin-free HO
+1995 state with the refined friction (last fixed-point iteration), remove all floating ice (+ unanchored pieces,
+column-wise) and solve once (execution/AIS3_ho_shelfrm_F1); the baseline F0 is the fixed-point run's last solve.
+Reports F1/F0 per LARMIP-3 sector and distance band next to SSA X1/S0 (6.24) on the same 2D vertices, and the
+Amundsen fast trunks. Output models/ho_shelf_removal_test.npz.
+
+### 6.41 HO friction refinement and HO shelf-removal results (2026-11-24)
+- ho_friction_fixedpoint.py (driver 184915690, 5.1 h; 3 hugemem solves): formerly pinned grounded vertices with
+  obs > 10 m/yr (124,250): speed/obs median 0.668 (B95) -> 0.714 -> 0.752 -> 0.782; RMSE 160.1 -> 154.5 -> 150.8 ->
+  148.8 m/yr; C factor median 0.85 / 0.88 / 0.90 (p10 at the 0.67 limit). Never-pinned grounded unchanged (0.972-0.973,
+  RMSE 105.9 -> 105.6). Not converged; ~3-4 more iterations would approach 0.9-0.95.
+- check_ho_shelf_removal.py (184919663, 1.4 h, 100 SU driver): median speed-up F1/F0 (flux-weighted, capped) vs SSA
+  X1/S0 on the same vertices, grounded, baseline > 100 m/yr:
+  - Amundsen 0-5 km HO 1.11 (1.36) | SSA 1.06 (1.28); 5-20 km 1.03 | 1.01; trunks (obs > 1000 m/yr, < 20 km) HO 1.08 |
+    SSA 1.06 (n 8,888).
+  - Weddell 0-5 km HO 1.86 (3.26) | SSA 1.50 (2.32); Ross 1.54 | 1.66; East Antarctica 1.10 | 1.04 (trunks 1.11 | 1.03);
+    Peninsula 1.08 | 1.05.
+  - One cut grounding-line spot reaches 2.3e8 m/yr (as in the SSA test; excluded by medians).
+- Reading: HO responds only slightly more than SSA (clearly more only in Weddell). The SSA approximation is not the
+  main reason Amundsen grounded ice ignores its shelves; the cause is shared by both tracks (inverted friction,
+  prescribed N with linear sliding, or the geometry).
+- Next: SSA shelf removal with more plastic sliding (p5_flotN, regularised Coulomb) to test the friction law's role;
+  finish the HO friction refinement, then the pin-free HO historical with gamma_0 = 4000.
+- 2026-11-24 13:30 check (433.2k SU left). Complete through 2300: ctrl_coupledN_p3_hm4000, both feedback ctrls,
+  ctrl_coupledN_p3_hm8000, ssp126 MRI, ssp534-over CESM2 and MRI. Two chains stopped after attempt + retry both hit
+  the 16 h walltime at the same point (deterministically slow, not stalled): ssp126 CESM2 2200-2225 (96%) and MRI
+  SMB-only 2175-2200 (92%). Dirs -> *_walltime_20261124(_attempts); resumed with AIS3_PROJ_TIME_FACTOR=5:
+  185034786 / 185034787. MRI feedback ssp585 2200-2225 at 169 min without a write (auto-kill at 180).
+  - SLE (run - own ctrl, mm, ISSM VAF):
+    - v2 ssp585 CESM2 turns near 2150: -99.0 (2150), -75.3 (2175); October minimum -160 near 2185.
+    - v2 collapse +16.8 at 2150 (collapse adds +116 mm by 2150 vs +50 in October).
+    - v2 ssp585 MRI positive from ~2210: -18.9 (2200), +27.8 (2225), +75.7 (2250); October MRI -64.4 at 2250.
+      MRI ocean-only +63.6 / +94.9 / +132.6 / +175.0 at 2200-2275 (~6x October CESM2 ocean-only). Under v2 the
+      MRI reversal is ocean-driven.
+    - SMB feedback: CESM2 -10.6 at 2200, MRI -11.9 at 2200 vs -18.9 without (+7 mm).
+    - ssp534-over at 2300: CESM2 -119.8, MRI -130.4, MRI more negative than ssp126 MRI (-109.0): no reversal
+      on the overshoot path.
+    - hm8000 ssp585 CESM2 -71.3 at 2150 vs hm4000 -99.0 (+28 mm from the stronger melt sensitivity).
+    - Drift test at 2100: drift-corrected ssp585 - ctrl -63.6 vs -63.2 uncorrected (0.6%): ctrl subtraction holds.
+    - SEM1 at 2100: -63.3 (no feedback) / -63.6 (feedback) vs -63.2 / -63.5: no effect yet.
+    - v2 ctrl drift -69.4 mm by 2300 (October -116.0); hm8000 ctrl the same (-70.6).
+
+### 6.42 Friction-law role in the shelf-removal response; HO refinement continued; pin-free HO historical at gamma_0 = 4000 queued (2026-11-24)
+- check_shelf_removal_plastic.py (driver 185035699, 15 min; four 48-cpu SSA solves, 3-11 min each; ~65 SU in
+  total): the 6.24 shelf-removal test on models/AIS3_proj_ssa_init.nc with two more plastic laws, both with
+  flotation N (coupling 2) and the production basal drag kept where the law allows it:
+  - Budd p=5, q=1 (drag-preserving rescale).
+  - Schoof law (ISSM friction.schoof, the MISMIP+ form; m = 1/3, Cmax = 0.4). It is often called a regularised
+    Coulomb law, but it is not ISSM's regcoulomb (Joughin et al. 2019), which has no N.
+  - In the Schoof runs, 9,617 grounded vertices (0.8%) sit at the r = tau0/(Cmax N) = 0.95 cap, so their drag
+    is lower than production. Grounded RMSE against obs: Schoof 122.5 m/yr; p=1 85.2, p=3 85.3, p=5 86.7.
+  - Results (grounded, baseline > 100 m/yr): median speed-up with shelves removed over shelves as is (flux-weighted, capped):
+
+    | law | Amundsen 0-5 km | 5-20 km | trunks | Weddell 0-5 km | Ross 0-5 km | EA trunks |
+    |---|---|---|---|---|---|---|
+    | Budd p=1, prescribed N (production) | 1.09 (1.35) | 1.02 | 1.07 | 1.84 | 2.32 | 1.06 |
+    | Budd p=3, flotation N | 1.20 (1.53) | 1.06 | 1.15 | 2.48 | 2.82 | 1.15 |
+    | Budd p=5, flotation N | 1.25 (1.61) | 1.10 | 1.19 | 2.73 | 3.11 | 1.19 |
+    | Schoof, flotation N | 1.19 (1.54) | 1.06 | 1.18 | 2.36 | 2.76 | 1.13 |
+
+- Reading:
+  - The friction law matters: plastic sliding with flotation N roughly triples the instantaneous speed-up of the
+    Amundsen trunks (+7% to +18-19%) and raises it everywhere else.
+  - Even fully plastic, Amundsen's grounded ice is still the least sensitive of the marine sectors (Weddell and
+    Ross speed up 2.4-3.1x at the grounding line). The weak shelf coupling there is therefore not mainly the
+    linear-Budd-plus-fixed-N choice. The remaining suspects are the geometry and buttressing of the Amundsen
+    shelves themselves (Thwaites' unconfined tongue, PIG's narrow shelf) and the inverted C, which puts the
+    resistance on the bed.
+  - These are diagnostic solves. Under flotation N, thinning near the grounding line lowers N and so weakens the
+    bed further; that feedback only appears in a transient. The p3_flotN historical (6.33) showed no extra Amundsen
+    acceleration over 1995-2019, but the 2019-2300 projections could differ: a p3_flotN or p5_flotN projection
+    is the test.
+  - The Schoof baseline drifts from production: its capped vertices sit on the fast trunks near the grounding
+    line, where N goes to 0. Its ratios therefore compare against a faster baseline.
+- HO friction refinement continued: AIS3_FP_CONTINUE=1 runs iterations 4-7 from C3 in
+  models/ho_friction_fixedpoint.npz. Driver 185035566 (hugemem 24 cpu / 720 GB) writes
+  models/ho_friction_fixedpoint_cont.npz; run dirs are execution/AIS3_ho_fricfp_it4..7; the it1-3 logs are
+  archived as *.it1-3_20261123.
+- ais_0.1.py, new historical options (only with AIS3_HIST_FRICTION=budd_nopins):
+  - AIS3_HIST_FRICTION_C='<npz>:<key>' replaces the Budd C.
+  - AIS3_HIST_MELT='hm<g>' sets gamma_0 and delta_t from models/melt_calibration_hm_ho.json on a fresh start
+    (asserted on resume).
+- Pin-free HO historical with gamma_0 = 4000 and the refined C7: launch_historical_budd_nopins_hm4000.pbs, tag
+  _budd_nopins_hm4000. Four chunks 185035602 / 604 / 605 / 606, chained afterok on 185035566.
+- 2026-11-24 16:00 check (413.8k SU left): health clean. SEM1 ctrls at 2200, SEM1 ssp585 runs at 2125. SLE at
+  2125: SEM1 -92.4 vs v2 -92.0, SEM1+fb -92.9 vs v2+fb -92.4 (no SEM1 effect yet); SEM1 ctrl drift -30.3 vs -31.0
+  (v2). Drift test at 2125: corrected -94.7 vs -92.0 uncorrected (2.9%, under the 10% caveat threshold). Figures:
+  config/plot_proj_v2.py -> docs/figures/projections_v2_{sensitivity,scenarios}.png.
+- HO refinement iterations 4-7 done (driver 185035566, 7.2 h; solves 1.5 h / ~430 SU each; ~2,250 SU in total
+  including the 527 SU driver). Formerly pinned region speed/obs median 0.782 (it3) -> 0.803 -> 0.818 -> 0.828 ->
+  0.837; RMSE 148.8 -> 146.3 m/yr; never-pinned grounded unchanged (0.973, RMSE 105.4). Gains shrink each step
+  (+0.021 ... +0.009) and the result stops short of 0.9. 29% of the region's vertices sit at the C = 0.05 lower
+  bound, and 43% of the vertices still below 0.6 of obs are at the bound: there the ice is too slow with almost
+  no basal drag, so stiff ice (B) or the geometry limits it, not the friction.
+- Chunk 1 of the pin-free HO historical (185035602) started from C7: C changed at 93,030 vertices (factor median
+  0.585), gamma_0 = 4000, delta_t [-0.424, 2.323].
+- 2026-11-25 00:00 check (399.6k SU left). First automatic stall kill: SEM1 ssp585 2125-2150 (no write after its
+  first output for 3 h) was qdel'd by its driver ~17:34 and retried 17:46 (185065086); the retry runs normally
+  (~88% at 23:52). Complete through 2300: ssp585 MRI v2, MRI ocean-only. Drift-test pair complete through 2150.
+  - SLE (mm, run - own ctrl): v2 ssp585 MRI +194.1 at 2300 (October -41.9); MRI ocean-only +222.9 at 2300
+    (October CESM2 ocean-only +36.4, ~6x). v2 ssp585 CESM2 -18.8 at 2200 (October -152.0). v2 collapse +118.1 at
+    2175 (October -81.1). hm8000 CESM2 -28.9 at 2175 vs hm4000 -75.3 (+46 mm).
+  - SMB feedback: CESM2 -10.6 vs -18.8 at 2200 (+8 mm), +107.1 at 2225; MRI +41.2 vs +27.8 at 2225 (+13 mm).
+  - Drift test final (2150): corrected -104.1 vs uncorrected -99.0, 5.2%; 2.9% at 2125, 0.6% at 2100. Subtracting
+    the ctrl holds within ~5% to 2150: no caveat needed for the 2100 numbers.
+- 2026-11-25 11:35 check (375.0k SU left): health clean; all unfinished chains advanced overnight (ssp585 CESM2
+  2225, ssp126 CESM2 2225, collapse 2175, feedback ssp585 CESM2 2250 / MRI 2275, MRI SMB-only 2200, hm8000 2200,
+  SEM1 ctrls 2275 / 2250, SEM1 ssp585 2150 / 2150).
+  - SLE (mm, run - own ctrl): v2 ssp585 CESM2 +87.9 at 2225 (October -103.6). SMB feedback grows: CESM2 +107.1 vs
+    +87.9 at 2225 (+19), +273.5 at 2250; MRI +172.9 vs +134.7 at 2275 (+38). hm8000 CESM2 +46.4 vs -18.8 at 2200
+    (+65). MRI SMB-only turns too: -83.2 (2175) -> -71.0 (2200).
+  - SEM1 at 2150: -102.2 vs v2 -99.0 (3 mm MORE negative); SEM1+fb -99.3 vs v2+fb -99.2. No added loss yet;
+    the SEM1 2019 state has ~3.6% less floating melt than hm4000 (see SEM1 smoke check), which may offset the
+    grounding-line melt early. Watch 2175-2250.
+- 2026-11-25 13:35 check: health clean (375.4k SU). SEM1 ssp585 CESM2 vs v2 (mm, minus own ctrl), 2150/2160/2170/
+  2175: -102.2/-95.9/-87.5/-79.8 vs -99.0/-92.4/-83.2/-75.3. A steady 3-4.5 mm offset to more negative, slowly
+  growing; SEM1 does not add loss so far (cf. x1.35 in the LARMIP SEM1 test).
+- 2026-11-26 check (342.8k SU left). Complete through 2300: ssp126 CESM2, feedback ssp585 CESM2 and MRI, MRI SMB-only,
+  both SEM1 ctrls. Running: ssp585 CESM2 2275, hm8000 2250, SEM1 ssp585 2225 / 2225.
+- **v2 collapse run blew up at ~2180; chain stopped.** The 2175-2200 driver died 2026-11-25 ~06:10 before submitting
+  sub2183: pyissm consistency check "equality thickness = surface-base violated" (a Python exception, so no checkpoint
+  past 2175 and no chaining). Cause found by parsing the sub-solve outbins:
+  - max thickness stays ~4.6 km through sub2179; end of sub2180 21.7 km, sub2181 439 km, sub2182 1.3e8 m (speeds to
+    1e16 m/yr); the 1e-9 m absolute tolerance of the check then fails on rounding.
+  - runaway cluster: 84 grounded vertices with H > 6 km at the end of sub2180, ~23 x 7 km around x 2490, y -411 km
+    (~81E, 67.5S, West Ice Shelf coast, East Antarctica), bed +430..+610 m, 2019 thickness 200-320 m, speed ~3 km/yr.
+  - precursor since 2156: the first step after a collapse removal often has a one-step speed spike (3e5 to 4e16 m/yr,
+    sub2156/2159/2171/2172/2179) that recovers by the year-end output; survivable until 2180.
+  - The 2150-2175 history and the 2175 checkpoint are clean (max H 4.61 km, max speed 21.7 km/yr), so v2 collapse
+    results stand through 2175 (+118.1 mm). Not yet rerun.
+- 2026-11-26 17:00 check: health clean (341.6k SU). v2 ssp585 CESM2 +235.7 (2250), +410.0 (2275) (October -21.3 / +89.3);
+  with feedback +273.5 / +475.6. SEM1 vs v2 at 2175/2200/2225: -79.8/-24.8/+80.7 vs -75.3/-18.8/+87.9 (SEM1 4.5-7 mm
+  lower, gap growing slowly); with feedback -73.6/-11.5/+105.9 vs -73.3/-10.6/+107.1 (~1 mm lower). So far SEM1
+  (with the matched-present-day refit) does not add loss in the ssp585 projections, unlike the x1.35 LARMIP test.
+  Collapse rerun from 2175 awaiting approval of the fix.

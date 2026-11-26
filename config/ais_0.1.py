@@ -88,6 +88,13 @@ def use_ssa_budd_friction_no_pins(md):
     assert sf.getncattr('classtype') == 'friction.default' and int(sf.getncattr('coupling')) == 3
     assert np.all(np.asarray(sf.variables['p'][:]) == 1) and np.all(np.asarray(sf.variables['q'][:]) == 1)
     C2 = np.asarray(sf.variables['coefficient'][:], dtype=float).ravel()
+    if HIST_FRICTION_C:
+        _f, _k = HIST_FRICTION_C.rsplit(':', 1)
+        _C = np.asarray(np.load(_f)[_k], dtype=float).ravel()
+        assert _C.size == nvb, (_C.size, nvb)
+        print(f"-- Friction coefficient from {HIST_FRICTION_C}: changed at {int((np.abs(_C - C2) > 1e-9).sum())} "
+              f"vertices (factor median {np.median((_C / np.where(C2 > 0, C2, 1))[np.abs(_C - C2) > 1e-9]):.3f})")
+        C2 = _C
     N2 = np.asarray(sf.variables['effective_pressure'][:], dtype=float).ravel()
     lim = float(sf.getncattr('effective_pressure_limit'))
     s.close()
@@ -387,6 +394,16 @@ HIST_FRICTION = os.environ.get('AIS3_HIST_FRICTION', '')
 assert HIST_FRICTION in ('', 'budd_nopins'), HIST_FRICTION
 assert not HIST_FRICTION or HIST_TAG not in ('', '_relaxfix', '_chunk1rerun'), \
     'AIS3_HIST_FRICTION needs a new AIS3_HIST_TAG'
+# Optional refinements of a fresh budd_nopins start (worklog 6.42):
+#   AIS3_HIST_FRICTION_C='<npz>:<key>'  base-layer friction coefficient replacing the SSA field, e.g.
+#                                       models/ho_friction_fixedpoint_cont.npz:C7 (ho_friction_fixedpoint.py)
+#   AIS3_HIST_MELT='hm<gamma_0>'        gamma_0 and per-basin deltaT from models/melt_calibration_hm_ho.json
+#                                       (melt_calibration_hm_refit_ho.py), replacing the gamma_0=300 calibration
+HIST_FRICTION_C = os.environ.get('AIS3_HIST_FRICTION_C', '')
+HIST_MELT = os.environ.get('AIS3_HIST_MELT', '')
+assert not (HIST_FRICTION_C or HIST_MELT) or HIST_FRICTION == 'budd_nopins', \
+    'AIS3_HIST_FRICTION_C / AIS3_HIST_MELT need AIS3_HIST_FRICTION=budd_nopins'
+assert HIST_MELT == '' or HIST_MELT.startswith('hm'), HIST_MELT
 # steps = ['ssa_friction_inv_lcurve']
 # steps = ['ssa_friction_inv_sensit']
 
@@ -2819,6 +2836,8 @@ if 'historical_dhdt_tuning' in steps:
         if HIST_FRICTION == 'budd_nopins':
             assert type(md.friction).__name__ == 'default', f'checkpoint friction {type(md.friction).__name__}'
             assert not np.isfinite(np.asarray(md.stressbalance.spcvx, dtype=float)).any(), 'checkpoint has pins'
+        if HIST_MELT:
+            assert abs(float(md.basalforcings.gamma_0) - float(HIST_MELT[2:])) < 1e-6, f'checkpoint gamma_0 {md.basalforcings.gamma_0}'
 
         # Carry the last chunk's final geometry/grounding-line state forward as this chunk's
         # initial condition. ice_levelset is left untouched (calving isn't modelled here --
@@ -2881,6 +2900,14 @@ if 'historical_dhdt_tuning' in steps:
         current_time = FULL_START_TIME
         if HIST_FRICTION == 'budd_nopins':
             use_ssa_budd_friction_no_pins(md)
+        if HIST_MELT:
+            import json as _json
+            _mem = _json.load(open(f'{model_dir}/melt_calibration_hm_ho.json'))['members'][HIST_MELT]
+            assert type(md.basalforcings).__name__ == 'ismip6', type(md.basalforcings).__name__
+            md.basalforcings.gamma_0 = float(_mem['gamma_0'])
+            md.basalforcings.delta_t = np.asarray(_mem['delta_t'], dtype=float)
+            print(f"-- Melt {HIST_MELT}: gamma_0={md.basalforcings.gamma_0}, deltaT "
+                  f"[{md.basalforcings.delta_t.min():.3f}, {md.basalforcings.delta_t.max():.3f}]")
 
     chunk_final_time = min(current_time + CHUNK_YEARS, FULL_END_TIME)
     print(f"-- This chunk: t={current_time} -> t={chunk_final_time}")
