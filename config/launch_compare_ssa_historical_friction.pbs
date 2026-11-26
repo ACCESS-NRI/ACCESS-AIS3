@@ -1,0 +1,18 @@
+#!/bin/bash
+# Driver for compare_ssa_historical_friction.py: scores the SSA historical runs (friction law x melt
+# calibration) against CPOM dH/dt and the NSIDC-0720 speed change, 1995-2019.
+#PBS -N cmp_hist_fric
+#PBS -P au88
+#PBS -q normal
+#PBS -l walltime=02:00:00
+#PBS -l ncpus=4
+#PBS -l mem=96GB
+#PBS -l storage=gdata/au88+gdata/vk83+gdata/av17
+#PBS -l wd
+#PBS -o launch_compare_ssa_historical_friction.pbs.out
+#PBS -e launch_compare_ssa_historical_friction.pbs.err
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
+cd "${AIS3_ROOT:-$PBS_O_WORKDIR}"; [ -f site.env ] || cd config
+[ -f site.env ] || { echo "config/site.env not found: qsub from <repo>/config" >&2; exit 1; }
+set -a; . ./site.env; set +a
+"$AIS3_PYTHON" -u compare_ssa_historical_friction.py

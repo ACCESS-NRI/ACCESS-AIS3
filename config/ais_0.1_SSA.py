@@ -73,6 +73,137 @@ os.environ['ISSM_DIR'] = site.ISSM_DIR
 model_dir = f'{site.ROOT}/models'
 execution_dir = f'{site.ROOT}/execution_SSA'
 
+# Melt calibration for the whole SSA chain (worklog 6.29-6.31). '' (default) = production: gamma_0=300
+# with per-basin refit deltaT. '_hm<gamma_0>' = member hm<gamma_0> of models/melt_calibration_hm.json
+# (history-matched calibration, melt_history_match.py + melt_calibration_hm_refit.py), e.g. _hm4000.
+# The tag is appended to the melt file, the historical run, the projection initial state and baseline
+# and every projection experiment name, so no production file is read as input or overwritten.
+SSA_CALIB = os.environ.get('AIS3_SSA_CALIB', '')
+assert SSA_CALIB == '' or SSA_CALIB.startswith('_hm'), f'AIS3_SSA_CALIB={SSA_CALIB!r}'
+# '_hm<g>sem1' (member of models/melt_calibration_hm_sem1.json, melt_calibration_hm_refit_sem1.py): melt on partly
+# floating elements, groundingline.melt_interpolation = SubelementMelt1 in the historical run and every projection
+# chunk. Needs the ISSM build with the ismip6 IsAllFloating test removed (Element::Ismip6FloatingiceMeltingRate):
+# AIS3_ISSM_DIR must hold the marker file SEM1_PATCH. (Unpatched, the ismip6 class sets no melt on partly floating
+# elements, so SubelementMelt1 would silently change nothing.)
+CALIB_SEM1 = SSA_CALIB.endswith('sem1')
+SEM1_MARKER = f'{site.ISSM_DIR}/SEM1_PATCH'
+if CALIB_SEM1:
+    assert os.path.exists(SEM1_MARKER), f'AIS3_SSA_CALIB={SSA_CALIB} needs the patched ISSM build ({SEM1_MARKER} missing)'
+# Friction-law variant for historical_dhdt_tuning_ssa (worklog 6.32): '' = production Budd p=q=1 with the
+# prescribed (Ehrenfeucht) N; p<P>_fixedN / p<P>_flotN = exponent p=P (q=1) with the prescribed N
+# (coupling 3) or N from flotation (coupling 2), C rescaled once at the start so the initial basal drag
+# is unchanged (rescale_friction_drag_preserving). Appended as _<variant> to the historical run's name.
+SSA_FRICTION = os.environ.get('AIS3_SSA_FRICTION', '')
+assert SSA_FRICTION in ('', 'p1_flotN', 'p3_fixedN', 'p3_flotN', 'p5_flotN'), f'AIS3_SSA_FRICTION={SSA_FRICTION!r}'
+FRIC_TAG = f'_{SSA_FRICTION}' if SSA_FRICTION else ''
+# Time-varying ocean forcing for historical_dhdt_tuning_ssa (worklog 6.34): '' = the static Zhou climatology;
+# main / cold / warm / vary = ISMIP7 contemporary (OCX) pathway, v2, applied as an anomaly on the calibration
+# climatology: TF(t) = TF_Zhou + (OCX_<pathway>(t) - OCX_main(t)), annual columns at year + 0.5. After 1995
+# 'main' equals the climatology (so it reproduces the static run); 'vary' carries the observed-like 16-yr
+# thermocline oscillation in the Amundsen, Getz and Aurora basins. Appended as _ocx<pathway>.
+SSA_OCEAN = os.environ.get('AIS3_SSA_OCEAN', '')
+assert SSA_OCEAN in ('', 'main', 'cold', 'warm', 'vary'), f'AIS3_SSA_OCEAN={SSA_OCEAN!r}'
+OCEAN_TAG = f'_ocx{SSA_OCEAN}' if SSA_OCEAN else ''
+# Prescribed observed ice front for historical_dhdt_tuning_ssa (worklog 6.37): 'greene' = moving front
+# (ismovingfront=1, zero calving rate and frontal melt) with spclevelset fixed at every vertex from the
+# Greene et al. (2022) masks in MIPKIT (icemask_greene, 24 epochs 1997.75-2021.2). Only observed CHANGE is
+# imposed: floating model ice is removed at an epoch if it is ice in the first (1997) mask and not ice at that
+# epoch (re-advance allowed); model ice outside the 1997 mask is left alone (dataset mismatch, not change).
+# AIS3_HIST_END (default 2019) shortens the run for smoke tests. Tags _frontgreene and _to<end>.
+SSA_FRONT = os.environ.get('AIS3_SSA_FRONT', '')
+assert SSA_FRONT in ('', 'greene'), f'AIS3_SSA_FRONT={SSA_FRONT!r}'
+HIST_END = float(os.environ.get('AIS3_HIST_END', '2019'))
+FRONT_TAG = (f'_front{SSA_FRONT}' if SSA_FRONT else '') + (f'_to{HIST_END:.0f}' if HIST_END != 2019 else '')
+
+
+def set_greene_front(md, t_end):
+    """Moving front prescribed from the observed Greene masks (observed retreat of floating ice only)."""
+    mip = xr.open_dataset(f'{site.ISMIP_DIR}/ISMIP7/AIS/obs/mipkit/AntarcticaObsISMIP7-v1.2.nc')
+    gm = mip['icemask_greene']
+    gx, gy = mip['x'].values.astype(float), mip['y'].values.astype(float)
+    mx = np.asarray(md.mesh.x, dtype=float).ravel()
+    my = np.asarray(md.mesh.y, dtype=float).ravel()
+    ix = np.clip(np.rint((mx - gx[0]) / (gx[1] - gx[0])).astype(int), 0, gx.size - 1)
+    iy = np.clip(np.rint((my - gy[0]) / (gy[1] - gy[0])).astype(int), 0, gy.size - 1)
+    tt = mip['greene_mask_time'].values
+    tdec = np.array([t.astype('datetime64[D]').astype(object).year +
+                     (t.astype('datetime64[D]').astype(object).timetuple().tm_yday - 1) / 365.25 for t in tt])
+    il0 = np.asarray(md.mask.ice_levelset, dtype=float).ravel()
+    ol0 = np.asarray(md.mask.ocean_levelset, dtype=float).ravel()
+    cand = (il0 < 0) & (ol0 < 0)
+    g_first = gm.isel(greene_mask_time=0).values[iy, ix] == 1
+    cand &= g_first
+    nv = md.mesh.numberofvertices
+    use = [k for k in range(tdec.size) if tdec[k] <= t_end + 1.0]
+    cols = [np.append(il0, float(md.timestepping.start_time))]
+    for k in use:
+        gone = cand & (gm.isel(greene_mask_time=k).values[iy, ix] == 0)
+        cols.append(np.append(np.where(gone, 1.0, il0), tdec[k]))
+        print(f"   Greene front {tdec[k]:.2f}: {int(gone.sum())} floating model vertices beyond the observed front", flush=True)
+    md.levelset.spclevelset = np.stack(cols, axis=1)
+    md.transient.ismovingfront = 1
+    md.calving = pyissm.model.classes.calving.default(md.calving)
+    md.calving.calvingrate = np.zeros(nv)
+    md.frontalforcings = pyissm.model.classes.frontalforcings.default(md.frontalforcings)
+    md.frontalforcings.meltingrate = np.zeros(nv)
+    md.levelset.kill_icebergs = 1
+
+
+def set_ocx_ocean_forcing(md, pathway, years):
+    """Replace the static TF columns with annual TF0 + (OCX pathway - OCX main) columns for `years`."""
+    from scipy.interpolate import RegularGridInterpolator
+    root = f'{site.ISMIP_DIR}/ISMIP7/AIS/OCX/ocean'
+    dp = xr.open_dataset(f'{root}/{pathway}/v2/tf_AIS_OCX_ocean_{pathway}_v2_1950-2025.nc')['tf']
+    dm = xr.open_dataset(f'{root}/main/v2/tf_AIS_OCX_ocean_main_v2_1950-2025.nc')['tf']
+    gx, gy = dp['x'].values.astype(float), dp['y'].values.astype(float)
+    assert np.allclose(np.abs(dp['z'].values), np.abs(np.asarray(md.basalforcings.tf_depths, dtype=float))), 'OCX depth levels differ from TF0'
+    nv = md.mesh.numberofvertices
+    pts = np.column_stack([np.asarray(md.mesh.y, dtype=float).ravel(), np.asarray(md.mesh.x, dtype=float).ravel()])
+    tf0 = np.stack([np.asarray(t, dtype=float)[:nv, 0] for t in md.basalforcings.tf])     # (nz, nv)
+    cols = np.empty((tf0.shape[0], nv + 1, len(years)))
+    fl = np.asarray(md.mask.ocean_levelset).ravel() < 0
+    for j, yr in enumerate(years):
+        sp = dp.sel(time=dp['time.year'] == yr).isel(time=0).to_numpy()
+        sm = dm.sel(time=dm['time.year'] == yr).isel(time=0).to_numpy()
+        for k in range(tf0.shape[0]):
+            a = RegularGridInterpolator((gy, gx), sp[k] - sm[k], method='linear', bounds_error=False, fill_value=np.nan)(pts)
+            cols[k, :nv, j] = tf0[k] + np.nan_to_num(a, nan=0.0)
+        cols[:, nv, j] = yr + 0.5
+        d = cols[:, :nv, j] - tf0
+        print(f"   OCX {pathway} {yr}: anomaly vs climatology over floating vertices, all depths: mean {d[:, fl].mean():+.3f} C, "
+              f"min {d[:, fl].min():+.3f}, max {d[:, fl].max():+.3f}", flush=True)
+    md.basalforcings.tf = [cols[k] for k in range(tf0.shape[0])]
+
+
+def rescale_friction_drag_preserving(md, variant):
+    """Budd p=q=1, coupling 3 -> exponent p (q=1), N prescribed or from flotation, same drag at u0.
+
+    ISSM Budd drag: tau = C^2 N^(q/p) u^(1/p). Equal drag at the current speed u0 (m/s, floored at
+    1 m/yr) gives C_new = C_old * sqrt(N_old * u0^(1 - 1/p) / N_new^(1/p)), as projection_ssp_ssa's
+    coupledN / coupledN_p3. N_old is the prescribed N floored at limit*rho_i*g*H; N_new is that, or for
+    *_flotN the flotation N (rho_i g H - rho_w g max(-base, 0), same floor) with coupling 2.
+    """
+    p_new = float(variant[1])
+    assert int(md.friction.coupling) == 3, md.friction.coupling
+    assert np.all(np.asarray(md.friction.p) == 1) and np.all(np.asarray(md.friction.q) == 1)
+    g_, ri_, rw_ = float(md.constants.g), float(md.materials.rho_ice), float(md.materials.rho_water)
+    H_ = np.asarray(md.geometry.thickness, dtype=float).ravel()
+    base_ = np.asarray(md.geometry.base, dtype=float).ravel()
+    floor_ = float(md.friction.effective_pressure_limit) * ri_ * g_ * H_
+    N_old = np.maximum(np.maximum(np.asarray(md.friction.effective_pressure, dtype=float).ravel(), 0.0), floor_)
+    N_new = np.maximum(ri_ * g_ * H_ - rw_ * g_ * np.maximum(-base_, 0.0), floor_) if variant.endswith('flotN') else N_old
+    u0_ = np.maximum(np.asarray(md.initialization.vel, dtype=float).ravel(), 1.0) / float(md.constants.yts)
+    ratio = np.sqrt(N_old * u0_ ** (1.0 - 1.0 / p_new) / np.maximum(N_new, 1e-6) ** (1.0 / p_new))
+    md.friction.coefficient = np.asarray(md.friction.coefficient, dtype=float).ravel() * ratio
+    md.friction.p = p_new * np.ones_like(np.asarray(md.friction.p, dtype=float))
+    md.friction.q = np.ones_like(np.asarray(md.friction.q, dtype=float))
+    if variant.endswith('flotN'):
+        md.friction.coupling = 2
+    gr_ = (np.asarray(md.mask.ocean_levelset).ravel() > 0) & (np.asarray(md.mask.ice_levelset).ravel() < 0)
+    print(f"-- Friction {variant}: p={p_new:g}, coupling {int(md.friction.coupling)}; grounded N_new/N_old median "
+          f"{np.median(N_new[gr_] / N_old[gr_]):.3f}; C factor median {np.median(ratio[gr_]):.3f} "
+          f"(p5 {np.percentile(ratio[gr_], 5):.3f}, p95 {np.percentile(ratio[gr_], 95):.3f})")
+
 save = True
 diagnostics = True
 plot = True
@@ -358,8 +489,21 @@ if 'melt_gamma_tuning_ssa' in steps:
         8.762072283674417, 5.8733775833670565, 3.728768234826943, 0.8688693456218887,
         7.1878933110812575, 12.258715419441897, 5.2128687613028335, 4.89285368124807,
         2.3120433144628567, 3.4396433109318245, 1.2381000126240504, 2.2497361133862843])
+    if SSA_CALIB:
+        import json
+        _mem = None
+        for _f in sorted(glob.glob(f'{model_dir}/melt_calibration_hm*.json')):  # hm.json, hm_sem1.json
+            _members = json.load(open(_f))['members']
+            if SSA_CALIB.lstrip('_') in _members:
+                assert _mem is None, f'{SSA_CALIB} defined in more than one melt_calibration_hm*.json'
+                _mem = _members[SSA_CALIB.lstrip('_')]
+        assert _mem is not None, f'no member {SSA_CALIB.lstrip("_")} in models/melt_calibration_hm*.json'
+        MELT_GAMMA0 = float(_mem['gamma_0'])
+        MELT_DELTA_T = np.asarray(_mem['delta_t'], dtype=float)
+        print(f"-- AIS3_SSA_CALIB={SSA_CALIB}: gamma_0={MELT_GAMMA0}, deltaT "
+              f"[{MELT_DELTA_T.min():.3f}, {MELT_DELTA_T.max():.3f}] (models/melt_calibration_hm*.json)")
 
-    out_path = f"{model_dir}/AIS3_melt_final_ssa{os.environ.get('AIS3_MELT_TAG', '')}.nc"
+    out_path = f"{model_dir}/AIS3_melt_final_ssa{SSA_CALIB}{os.environ.get('AIS3_MELT_TAG', '')}.nc"
     if save and os.path.exists(out_path):
         raise FileExistsError(f"{out_path} exists -- archive it first (mv -n) or set AIS3_MELT_TAG")
 
@@ -428,12 +572,19 @@ if 'historical_dhdt_tuning_ssa' in steps:
     # actual accepted answer (gamma_0=300, refit deltaT_basin, confirmed best-by-J2 in
     # ssa_melt_deltaT_refit_recalibrate.py). Load the properly reconstructed final
     # calibration instead (see finalize_ssa_melt_calibration.py for how it was built).
-    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_melt_final_ssa.nc')
+    hist_path = f'{model_dir}/AIS3_historical_1995_2019_SSA{SSA_CALIB}{FRIC_TAG}{OCEAN_TAG}{FRONT_TAG}.nc'
+    if (SSA_CALIB or FRIC_TAG or OCEAN_TAG or FRONT_TAG) and os.path.exists(hist_path):
+        raise FileExistsError(f'{hist_path} exists -- archive it first (mv -n)')
+    md = pyissm.model.io.load_model(f'{model_dir}/AIS3_melt_final_ssa{SSA_CALIB}.nc')
     # BUGFIX (same as ais_0.1.py's ho_relaxation/historical_dhdt_tuning, 2026-09-02):
     # save_model/load_model returns each basalforcings.tf entry as a plain Python list, not
     # ndarray -- crashes marshalling's numpy elementwise scaling step. Re-cast here too,
     # proactively, since this step reloads a model with tf already populated.
     md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
+    if SSA_FRICTION:
+        rescale_friction_drag_preserving(md, SSA_FRICTION)
+    if SSA_OCEAN:
+        set_ocx_ocean_forcing(md, SSA_OCEAN, list(range(1995, 2020)))
 
     md.inversion.iscontrol = 0
     md.verbose.solution = 1
@@ -445,9 +596,17 @@ if 'historical_dhdt_tuning_ssa' in steps:
     md.transient.isthermal = 0
     md.transient.isgroundingline = 1
     md.groundingline.migration = 'SubelementMigration'
+    if CALIB_SEM1:
+        md.groundingline.melt_interpolation = 'SubelementMelt1'
+        print(f"-- {SSA_CALIB}: melt_interpolation SubelementMelt1 (patched ISSM, {SEM1_MARKER})")
 
     md.timestepping.start_time = 1995
     md.timestepping.final_time = 2019  # bounded by dhdt_cpom coverage, see note above
+    if HIST_END != 2019:
+        md.timestepping.final_time = HIST_END
+        print(f"-- AIS3_HIST_END: final time {HIST_END}")
+    if SSA_FRONT:
+        set_greene_front(md, float(md.timestepping.final_time))
     md.timestepping.time_step = 0.1
 
     print("-- Building time-varying SMB from RACMO 1995-2019 annual means...")
@@ -472,19 +631,36 @@ if 'historical_dhdt_tuning_ssa' in steps:
     md.smb.mass_balance = mb_arr
 
     print("-- Assigning cluster and updating settings...")
-    md.miscellaneous.name = 'AIS3_historical_1995_2019_SSA'
+    md.miscellaneous.name = f'AIS3_historical_1995_2019_SSA{SSA_CALIB}{FRIC_TAG}{OCEAN_TAG}{FRONT_TAG}'
     md.cluster = cluster  # plain 48c/190GB config -- SSA mesh, no hugemem needed
     md.settings.waitonlock = 1440  # minutes -- synchronous submit-and-wait, same pattern
     md.settings.solver_residue_threshold = 1e-3
 
-    print("-- Submitting and waiting on historical transient run...")
-    md = pyissm.model.execute.solve(md, 'Transient', load_only=False, runtime_name=False)
+    # AIS3_HIST_LOAD_ONLY=1: the inner solve already finished (lock file present) but the driver died
+    # before saving (2026-11-20: four 48 GB drivers were OOM-killed loading the ~27 GB of results);
+    # load its results instead of resubmitting. The driver needs ~190 GB to load all 240 steps.
+    _run_dir = f"{execution_dir}/{md.miscellaneous.name}/{md.miscellaneous.name}"
+    if os.environ.get('AIS3_HIST_LOAD_ONLY', '') == '1':
+        assert os.path.exists(_run_dir + '.lock') and os.path.exists(_run_dir + '.outbin'), \
+            f'AIS3_HIST_LOAD_ONLY=1 but no finished run at {_run_dir}'
+        print(f"-- Loading the finished historical run from {_run_dir}.outbin (no resubmission)...")
+        md = pyissm.model.execute.solve(md, 'Transient', load_only=True, runtime_name=False)
+    elif os.environ.get('AIS3_HIST_SUBMIT_ONLY', '') == '1':
+        # Submit the inner solve and exit, so a big-memory driver does not sit idle for the whole solve;
+        # load and save afterwards with AIS3_HIST_LOAD_ONLY=1 (~190 GB, ~1 h).
+        assert not os.path.exists(_run_dir + '.lock'), f'{_run_dir}.lock exists: a finished run is already there'
+        print("-- Submitting the historical transient run (AIS3_HIST_SUBMIT_ONLY=1: not waiting)...")
+        pyissm.model.execute.solve(md, 'Transient', batch=True, load_only=False, runtime_name=False)
+        raise SystemExit(f'submitted {md.miscellaneous.name}; load it later with AIS3_HIST_LOAD_ONLY=1')
+    else:
+        print("-- Submitting and waiting on historical transient run...")
+        md = pyissm.model.execute.solve(md, 'Transient', load_only=False, runtime_name=False)
 
     # Save BEFORE the diagnostic (2026-09-21, same lesson as ais_0.1.py's chunked
     # historical_dhdt_tuning): don't let a diagnostic-only crash lose an already-completed
     # transient run's results.
-    print(f"\nSaving to {model_dir}/AIS3_historical_1995_2019_SSA.nc")
-    pyissm.model.io.save_model(md, f'{model_dir}/AIS3_historical_1995_2019_SSA.nc')
+    print(f"\nSaving to {hist_path}")
+    pyissm.model.io.save_model(md, hist_path)
 
     print("-- Comparing simulated dH/dt against MIPKIT's dhdt_cpom (1993-2019)...")
     mipkit = xr.open_dataset(f'{site.ISMIP_DIR}/ISMIP7/AIS/obs/mipkit/AntarcticaObsISMIP7-v1.2.nc')
@@ -568,6 +744,20 @@ if 'historical_dhdt_tuning_ssa' in steps:
 #                       C^2 N^(1/3) u^(1/3) instead of C^2 N u). C is rescaled once so the drag is
 #                       unchanged at the initial speed: C_new = C_old sqrt(N_old u0^(2/3) / N_new^(1/3)),
 #                       u0 in m/s with a 1 m/yr floor. Name gets _coupledN_p3.
+#   AIS3_PROJ_SMBFB=1   SMB-elevation feedback (docs/projection_experiments.md, v2 stage B): ISSM's
+#                       SMBgradients class, SMB = smbref + dSMB/dz * (s - href), evaluated every time step.
+#                       smbref = the SMB columns this step builds anyway (SMB0 + anomaly; SMB0 without SMB
+#                       forcing); href = the 2019 surface of the initial state (feedback zero at the start;
+#                       cached as AIS3_proj_ssa_href<calib>.npy); dSMB/dz = ISMIP7 dacabfdz (dEBM2-8000m), the
+#                       scenario's annual field when SMB forcing is on (last year held past the file end), else
+#                       the GCM's historical 1995-2014 mean, held fixed. kg m-2 s-1 m-1 -> m ice eq/yr per m;
+#                       NaN (outside the grid) -> 0. ctrl names the gradient's GCM with AIS3_PROJ_SMBFB_GCM.
+#                       Name gets _smbfb (ctrl: _smbfb-<gcm>); history files also get the surface.
+#   AIS3_PROJ_DRIFTCORR=<ctrl experiment>  drift-subtraction test (docs/projection_experiments.md, v2 stage D):
+#                       adds a fixed SMB flux correction = minus that ctrl's initial dH/dt, (H(2020.0) -
+#                       H(2019.1)) / 0.9 yr from its 2019-2050 history, on every vertex holding ice at 2019.1,
+#                       to the SMB (before the feedback, if any). The ctrl must be this run's configuration
+#                       (same friction and calibration tags). Name gets _driftcorr.
 #
 # Forcing is an anomaly on the reference state the model was calibrated with (worklog 4c):
 #   TF  = TF0  (Zhou climatology, as in the historical run) + [TF_gcm(t)  - TF_gcm(1995-2014)]
@@ -653,12 +843,37 @@ if 'projection_ssp_ssa' in steps:
     assert friction_mode in ('', 'coupledN', 'coupledN_p3'), friction_mode
     if friction_mode:
         exp += f'_{friction_mode}'
+    smb_feedback = os.environ.get('AIS3_PROJ_SMBFB', '') == '1'
+    if smb_feedback:
+        assert not larmip_region and not static_melt, 'AIS3_PROJ_SMBFB is for scenario and ctrl runs'
+        fb_gcm = os.environ.get('AIS3_PROJ_SMBFB_GCM', '')
+        if scenario == 'ctrl':
+            assert fb_gcm, 'ctrl with AIS3_PROJ_SMBFB=1 needs AIS3_PROJ_SMBFB_GCM (whose historical dacabfdz to use)'
+            exp += f"_smbfb-{fb_gcm.split('-')[0].lower()}"
+        else:
+            assert fb_gcm in ('', gcm), 'AIS3_PROJ_SMBFB_GCM is for ctrl only; SSP runs use their own GCM'
+            fb_gcm = gcm
+            exp += '_smbfb'
+    else:
+        assert not os.environ.get('AIS3_PROJ_SMBFB_GCM'), 'AIS3_PROJ_SMBFB_GCM without AIS3_PROJ_SMBFB=1'
+    driftcorr_src = os.environ.get('AIS3_PROJ_DRIFTCORR', '')
+    if driftcorr_src:
+        assert not larmip_region and not static_melt, 'AIS3_PROJ_DRIFTCORR is for scenario and ctrl runs'
+        assert driftcorr_src.startswith('ctrl') and '_driftcorr' not in driftcorr_src, driftcorr_src
+        assert (f'_{friction_mode}' in driftcorr_src) == bool(friction_mode), \
+            f'AIS3_PROJ_DRIFTCORR={driftcorr_src}: friction differs from this run ({friction_mode or "default"})'
+        assert driftcorr_src.endswith(SSA_CALIB) if SSA_CALIB else '_hm' not in driftcorr_src, \
+            f'AIS3_PROJ_DRIFTCORR={driftcorr_src}: melt calibration differs from this run ({SSA_CALIB or "production"})'
+        exp += '_driftcorr'
+    if SSA_CALIB:
+        assert melt_choice == 'ref', 'AIS3_SSA_CALIB replaces the melt calibration; leave AIS3_PROJ_MELT unset'
+        exp += SSA_CALIB
     edges = [e for e in CHUNK_EDGES if e < end_year] + [end_year]
     print(f"-- Experiment {exp}: scenario={scenario} gcm={gcm or '-'} forcing={forcing_mode} "
           f"melt={melt_choice} end={end_year:.0f} smoke={smoke}")
 
-    init_path = f'{model_dir}/AIS3_proj_ssa_init.nc'
-    baseline_path = f'{model_dir}/AIS3_proj_ssa_baseline.npz'
+    init_path = f'{model_dir}/AIS3_proj_ssa_init{SSA_CALIB}.nc'
+    baseline_path = f'{model_dir}/AIS3_proj_ssa_baseline{SSA_CALIB}.npz'
     stop_path = f'{model_dir}/AIS3_proj_ssa_{exp}.STOP'
 
     def _last_step(ts, field, nv):
@@ -697,8 +912,8 @@ if 'projection_ssp_ssa' in steps:
 
     # -- Projection initial state (built once from the historical run's 2019 end state) --------
     if not os.path.exists(init_path):
-        print("-- Building projection initial state from AIS3_historical_1995_2019_SSA.nc...")
-        md = pyissm.model.io.load_model(f'{model_dir}/AIS3_historical_1995_2019_SSA.nc')
+        print(f"-- Building projection initial state from AIS3_historical_1995_2019_SSA{SSA_CALIB}.nc...")
+        md = pyissm.model.io.load_model(f'{model_dir}/AIS3_historical_1995_2019_SSA{SSA_CALIB}.nc')
         md.basalforcings.tf = [np.asarray(t, dtype=float) for t in md.basalforcings.tf]
         adopt_final_state_2d(md)
         md.results.TransientSolution = []
@@ -855,8 +1070,9 @@ if 'projection_ssp_ssa' in steps:
         a = xr.open_dataset(f)['acabf']  # kg m-2 s-1, monthly
         return (a.mean('time') * yts / rho_ice).to_numpy()
 
-    if use_ocean or use_smb:
-        ref_grid = xr.open_dataset(sorted(glob.glob(f'{FORCING_ROOT}/{gcm}/historical/ocean/tf/v3/*.nc'))[0])
+    if use_ocean or use_smb or smb_feedback:
+        grid_gcm = fb_gcm if smb_feedback else gcm  # the same as gcm except for ctrl with feedback
+        ref_grid = xr.open_dataset(sorted(glob.glob(f'{FORCING_ROOT}/{grid_gcm}/historical/ocean/tf/v3/*.nc'))[0])
         gxx, gyy = np.meshgrid(ref_grid['x'].values, ref_grid['y'].values)
         vtx, wts, simplex = _interp_weights(gxx, gyy, md.mesh.x, md.mesh.y)
         to_mesh = lambda a: _interp_apply(a, vtx, wts, simplex)
@@ -923,8 +1139,99 @@ if 'projection_ssp_ssa' in steps:
     else:
         md.smb.mass_balance = smb0.copy()
 
+    if driftcorr_src:
+        h_ = np.load(f'{model_dir}/AIS3_proj_ssa_{driftcorr_src}_2019-2050_history.npz')
+        t_ = h_['times']
+        i0, i1 = int(np.argmin(np.abs(t_ - 2019.1))), int(np.argmin(np.abs(t_ - 2020.0)))
+        assert abs(t_[i0] - 2019.1) < 1e-3 and abs(t_[i1] - 2020.0) < 1e-3, t_[:3]
+        H0_, H1_ = h_['thickness'][i0].astype(float), h_['thickness'][i1].astype(float)
+        assert H0_.shape == (nv,), H0_.shape
+        ice0 = H0_ > float(md.masstransport.min_thickness) + 1e-3
+        corr = np.where(ice0, -(H1_ - H0_) / (t_[i1] - t_[i0]), 0.0)
+        mb_ = np.asarray(md.smb.mass_balance, dtype=float).copy()
+        if mb_.ndim == 2:
+            mb_[:nv, :] += corr[:, None]
+        else:
+            mb_ = mb_ + corr
+        md.smb.mass_balance = mb_
+        el_ = np.asarray(md.mesh.elements).astype(int) - 1
+        xv_, yv_ = np.asarray(md.mesh.x, dtype=float).ravel(), np.asarray(md.mesh.y, dtype=float).ravel()
+        ea_ = 0.5 * np.abs((xv_[el_[:, 1]] - xv_[el_[:, 0]]) * (yv_[el_[:, 2]] - yv_[el_[:, 0]])
+                           - (xv_[el_[:, 2]] - xv_[el_[:, 0]]) * (yv_[el_[:, 1]] - yv_[el_[:, 0]]))
+        va_ = np.bincount(el_[:, :3].ravel(), weights=np.repeat(ea_ / 3.0, 3), minlength=nv)
+        gr_ = h_['ocean_levelset'][i0] > 0
+        gt_ = lambda sel: float(np.sum(corr[sel] * va_[sel]) * float(md.materials.rho_ice) / 1e12)
+        print(f"   drift correction from {driftcorr_src} (2019.1-2020.0): {int(ice0.sum())} ice vertices; "
+              f"correction grounded {gt_(ice0 & gr_):+.1f} Gt/yr, floating {gt_(ice0 & ~gr_):+.1f} Gt/yr; "
+              f"vertex p1/p99 {np.percentile(corr[ice0], 1):+.3f}/{np.percentile(corr[ice0], 99):+.3f} m ice eq/yr")
+
+    if smb_feedback:
+        rho_ice, yts = float(md.materials.rho_ice), float(md.constants.yts)
+        href_path = f'{model_dir}/AIS3_proj_ssa_href{SSA_CALIB}.npy'
+        if not os.path.exists(href_path):
+            s_init = (np.asarray(md.geometry.surface, dtype=float).ravel() if resume_file == init_path else
+                      np.asarray(pyissm.model.io.load_model(init_path).geometry.surface, dtype=float).ravel())
+            np.save(href_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', s_init)
+            os.replace(href_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', href_path)
+        href = np.load(href_path)
+        assert href.shape == (nv,), href.shape
+
+        def _dsmbdz_year_myr(gcm_, scen, yr):
+            m = glob.glob(f'{FORCING_ROOT}/{gcm_}/{scen}/{SMB_PARAM}/dacabfdz/v*/dacabfdz_AIS_{gcm_}_{scen}_{SMB_PARAM}_v*_{yr}.nc')
+            if not m:
+                return None
+            assert len(m) == 1, m
+            g = xr.open_dataset(m[0], decode_times=False)['dacabfdz']  # kg m-2 s-1 per m, one annual field
+            return (g.mean('time') * yts / rho_ice).to_numpy()
+
+        if use_smb:  # the scenario's own annual gradient, on the SMB columns' times
+            grad = np.empty((nv + 1, years.size))
+            last_g, last_src = None, None
+            for j, yr in enumerate(years):
+                g = _dsmbdz_year_myr(fb_gcm, scenario, yr)
+                if g is None:
+                    assert last_src is not None, f'no dacabfdz for {fb_gcm}/{scenario} {yr}'
+                    g = last_g
+                else:
+                    last_g, last_src = g, yr
+                grad[:nv, j] = np.nan_to_num(to_mesh(g), nan=0.0)
+                grad[nv, j] = col_times[j]
+            gsrc = f'{fb_gcm}/{scenario} annual (data to {last_src})'
+        else:  # ctrl / ocean only: the historical 1995-2014 mean, fixed
+            gclim_path = f'{model_dir}/AIS3_proj_ssa_dsmbdzclim_{fb_gcm}_{SMB_PARAM}_{CLIM_Y0}-{CLIM_Y1}.npy'
+            if not os.path.exists(gclim_path):
+                print(f"   building {fb_gcm} {SMB_PARAM} historical dacabfdz mean {CLIM_Y0}-{CLIM_Y1}...")
+                acc = [_dsmbdz_year_myr(fb_gcm, 'historical', y) for y in range(CLIM_Y0, CLIM_Y1 + 1)]
+                assert all(a is not None for a in acc), 'missing historical dacabfdz years'
+                np.save(gclim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', to_mesh(np.mean(acc, axis=0)))
+                os.replace(gclim_path + f'.{os.uname().nodename}.{os.getpid()}.tmp.npy', gclim_path)
+            grad = np.nan_to_num(np.load(gclim_path), nan=0.0)
+            gsrc = f'{fb_gcm}/historical {CLIM_Y0}-{CLIM_Y1} mean, fixed'
+        smbref = np.asarray(md.smb.mass_balance, dtype=float)
+        md.smb = pyissm.model.classes.smb.gradients()
+        md.smb.href = href.copy()
+        md.smb.smbref = smbref
+        md.smb.b_pos = grad
+        md.smb.b_neg = grad.copy()
+        gr = (np.asarray(md.mask.ocean_levelset).ravel() > 0) & (np.asarray(md.mask.ice_levelset).ravel() < 0)
+        g_first = grad[:nv, 0] if grad.ndim == 2 else grad
+        g_last = grad[:nv, -1] if grad.ndim == 2 else grad
+        ds_now = np.asarray(md.geometry.surface, dtype=float).ravel() - href
+        print(f"   SMB feedback: dSMB/dz {gsrc}; grounded ice, m ice eq/yr per km: first column p1/p50/p99 "
+              f"{np.percentile(g_first[gr] * 1e3, 1):+.3f}/{np.percentile(g_first[gr] * 1e3, 50):+.3f}/"
+              f"{np.percentile(g_first[gr] * 1e3, 99):+.3f}, last column p99 {np.percentile(g_last[gr] * 1e3, 99):+.3f}; "
+              f"s - href at chunk start mean {ds_now[gr].mean():+.2f} m; feedback term at start "
+              f"{np.mean(g_first[gr] * ds_now[gr]):+.5f} m ice eq/yr (grounded mean)")
+
     if melt_interp:
         md.groundingline.melt_interpolation = melt_interp
+    if CALIB_SEM1:
+        assert melt_interp in ('', 'SubelementMelt1'), f'{SSA_CALIB} fixes melt_interpolation to SubelementMelt1'
+        md.groundingline.melt_interpolation = 'SubelementMelt1'
+    if (str(md.groundingline.melt_interpolation).startswith('Subelement') and not static_melt
+            and type(md.basalforcings).__name__ == 'ismip6'):
+        assert os.path.exists(SEM1_MARKER), (f'{md.groundingline.melt_interpolation} with ismip6 melt needs the patched '
+                                             f'ISSM ({SEM1_MARKER} missing): unpatched it changes nothing')
     if static_melt:
         from scipy.spatial import cKDTree
         assert resume_file == init_path and t1 <= 2050.0 + 1e-6, 'STATICMELT test: one chunk from the initial state'
@@ -1066,7 +1373,8 @@ if 'projection_ssp_ssa' in steps:
     # collapse applied to the adopted state before each. Each sub-solve gets only the forcing
     # columns around its own years (the full chunk's TF is ~10 GB).
     sub_edges = [current_time] + ([float(y) for y, _ in segs if current_time < y < t1] if collapse else []) + [t1]
-    tf_full, mb_full = getattr(md.basalforcings, 'tf', None), md.smb.mass_balance  # no tf: STATICMELT test
+    tf_full = getattr(md.basalforcings, 'tf', None)  # no tf: STATICMELT test
+    smb_full = {k: getattr(md.smb, k) for k in (('smbref', 'b_pos', 'b_neg') if smb_feedback else ('mass_balance',))}
 
     def _window(a, s0, s1):
         a = np.asarray(a)
@@ -1084,7 +1392,7 @@ if 'projection_ssp_ssa' in steps:
     failed = False
 
     def _solve_watched(md, budget_min):
-        """solve() without pyissm's blind lock-file wait (collapse runs only, for now): submit, then
+        """solve() without pyissm's blind lock-file wait (every projection chunk): submit, then
         poll for the lock file AND for the end of the inner job (the PBS usage footer in its outlog).
         A job that has ended without writing its lock file has failed; pyissm would wait out the whole budget (a NaN at
         2059 left the collapse driver idle for 23 h, worklog 6.12). Returns (md, ok)."""
@@ -1107,7 +1415,13 @@ if 'projection_ssp_ssa' in steps:
         rdir = f'{md.cluster.executionpath}/{md.private.runtimename}'
         lock = f'{rdir}/{md.miscellaneous.name}.lock'
         outlog = f'{rdir}/{md.miscellaneous.name}.outlog'  # PBS appends its usage footer when the job ends
-        t_start, ended, missing = _time.time(), 0, 0
+        outbin = f'{rdir}/{md.miscellaneous.name}.outbin'
+        # Stalled solves (2026-11-21/22: four chunks stopped writing output for 2.5-4 h with all 48 cores busy, on
+        # different nodes; each reran normally) are killed once the outbin has not grown for AIS3_PROJ_STALL_MIN
+        # minutes, so they end and are retried like a crash. Not for collapse runs: their 1-yr sub-solves write
+        # their only output at the end. 0 disables.
+        stall_min = 0 if collapse else float(os.environ.get('AIS3_PROJ_STALL_MIN', '180'))
+        t_start, ended, missing, stall_killed = _time.time(), 0, 0, False
         while True:
             _time.sleep(60)
             if os.path.exists(lock):
@@ -1119,6 +1433,15 @@ if 'projection_ssp_ssa' in steps:
             if ended >= 2:  # job over for two polls and still no lock file
                 print(f"   inner job for {md.miscellaneous.name} ended without a lock file -- failed; see {outlog}")
                 return md, False
+            if (stall_min > 0 and not stall_killed and os.path.exists(outbin)
+                    and (_time.time() - os.path.getmtime(outbin)) / 60 > stall_min):
+                q = subprocess.run(['qselect', '-u', os.environ.get('USER', ''), '-N', f'{md.miscellaneous.name}.queue'],
+                                   capture_output=True, text=True)
+                jids = q.stdout.split()
+                print(f"   {md.miscellaneous.name}: outbin unchanged for > {stall_min:.0f} min -- stalled; qdel {' '.join(jids)}")
+                if jids:
+                    subprocess.run(['qdel', *jids], capture_output=True, text=True)
+                stall_killed = True
             # a failed qsub (PBS server unreachable just after maintenance, 2026-11-11) leaves no job
             # and no outlog: three polls with neither means the submission failed
             if not os.path.exists(outlog):
@@ -1149,7 +1472,8 @@ if 'projection_ssp_ssa' in steps:
         if len(sub_edges) > 2:
             if tf_full is not None:
                 md.basalforcings.tf = [_window(a, s0, s1) for a in tf_full]
-            md.smb.mass_balance = _window(mb_full, s0, s1)
+            for k, a in smb_full.items():
+                setattr(md.smb, k, _window(a, s0, s1))
         md.timestepping.start_time = s0
         md.timestepping.final_time = s1
         md.miscellaneous.name = sub_name
@@ -1163,7 +1487,9 @@ if 'projection_ssp_ssa' in steps:
         md.settings.waitonlock = max(30, int(wall_min - 90 - (_time.time() - t_wall0) / 60))
         print(f"   inner solve time {md.cluster.time} min; wait budget {md.settings.waitonlock} min")
         print(f"-- Submitting and waiting on {sub_name}...")
-        if collapse:
+        # Watched solve for every run since 2026-11-21 (collapse only before): pyissm's blind lock-file wait left three
+        # stage-A drivers idle for 14-17 h after their inner jobs died in 1 min (MPI/UCX fault, node clx-0145).
+        if True:
             md, ok = _solve_watched(md, md.settings.waitonlock)
             if not ok:  # NaNs here were not reproducible (2059 failed once, passed on rerun): retry once
                 budget = max(30, int(wall_min - 90 - (_time.time() - t_wall0) / 60))
@@ -1179,8 +1505,6 @@ if 'projection_ssp_ssa' in steps:
                 if not steps_list:
                     raise SystemExit(f"{sub_name}: first sub-solve of the chunk failed -- nothing to save")
                 break
-        else:
-            md = pyissm.model.execute.solve(md, 'Transient', load_only=False, runtime_name=False)
 
         ts = md.results.TransientSolution
         # md.results.TransientSolution is a pyissm `solution` holding a `.steps` list; attribute access
@@ -1211,6 +1535,7 @@ if 'projection_ssp_ssa' in steps:
              ocean_levelset=_stack('MaskOceanLevelset'), vel=_stack('Vel'),
              melt=_stack('BasalforcingsFloatingiceMeltingRate'), smb=_stack('SmbMassBalance'),
              **({'collapsed_at': collapsed_at} if collapse else {}),
+             **({'surface': _stack('Surface')} if smb_feedback else {}),
              **{f'scalar_{n}': v for n, v in scalars.items()})
     rho_sw, A_OCEAN = 1028.0, 3.625e14
     vaf = scalars['IceVolumeAboveFloatation']
@@ -1244,7 +1569,8 @@ if 'projection_ssp_ssa' in steps:
                             'AIS3_PROJ_LARMIP_MODE', 'AIS3_PROJ_LARMIP_AMP', 'AIS3_LARMIP_MASK',
                             'AIS3_LARMIP_MASK_VAR', 'AIS3_PROJ_COLLAPSE', 'AIS3_PROJ_COLLAPSE_VER',
                             'AIS3_PROJ_FRICTION', 'AIS3_PROJ_TIME_FACTOR', 'AIS3_PROJ_RESIDUE', 'AIS3_PROJ_COLLAPSE_INNER_MIN',
-                            'AIS3_PROJ_CHUNK_YEARS')
+                            'AIS3_PROJ_CHUNK_YEARS', 'AIS3_SSA_CALIB', 'AIS3_PROJ_SMBFB', 'AIS3_PROJ_SMBFB_GCM',
+                            'AIS3_PROJ_MELTINTERP', 'AIS3_ISSM_DIR', 'AIS3_PROJ_DRIFTCORR', 'AIS3_PROJ_STALL_MIN')
                        if os.environ.get(k))
             log = f'{site.CONFIG}/logs/proj_ssa_{exp}_{t1:.0f}-next'
             out = subprocess.run(['qsub', *site.qsub_args(), '-v', env, '-N', f'proj_{exp}'[:15],
